@@ -1,0 +1,38 @@
+variables:
+  DATABRICKS_HOST: "https://adb-<workspace-id>.<region>.azuredatabricks.net"
+
+pool:
+  vmImage: "ubuntu-latest"
+
+steps:
+  - task: AzureCLI@2
+    displayName: "Create Databricks Cluster"
+    inputs:
+      azureSubscription: "<your-service-connection-name>"
+      scriptType: "bash"
+      scriptLocation: "inlineScript"
+      inlineScript: |
+        # Acquire an Entra ID (AAD) access token scoped to Databricks
+        DATABRICKS_TOKEN=$(az account get-access-token \
+          --resource 2ff814a6-3304-4ab8-85cb-cd0e6f879c1d \
+          --query accessToken \
+          --output tsv)
+
+        # Create the cluster via the Databricks REST API
+        curl -s -X POST \
+          "${DATABRICKS_HOST}/api/2.0/clusters/create" \
+          -H "Authorization: Bearer ${DATABRICKS_TOKEN}" \
+          -H "Content-Type: application/json" \
+          -d '{
+            "cluster_name": "my-pipeline-cluster",
+            "spark_version": "15.4.x-scala2.12",
+            "node_type_id": "Standard_DS3_v2",
+            "autoscale": {
+              "min_workers": 1,
+              "max_workers": 4
+            },
+            "autotermination_minutes": 30,
+            "spark_conf": {
+              "spark.databricks.delta.retentionDurationCheck.enabled": "false"
+            }
+          }'

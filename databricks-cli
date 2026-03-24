@@ -1,14 +1,1 @@
-cat > /tmp/patch.json << 'EOF'
-{
-  "schemas": ["urn:ietf:params:scim:schemas:core:2.0:PatchOp"],
-  "Operations": [
-    {
-      "op": "add",
-      "path": "members",
-      "value": [{"value": "123456789"}]
-    }
-  ]
-}
-EOF
-
-databricks groups patch <GROUP_ID> --json @/tmp/patch.json
+databricks secrets create-scope --json '{"scope":"connectedSecrets","scope_backend_type":"AZURE_KEYVAULT","backend_azure_keyvault":{"dns_name":"https://<your-keyvault-name>.vault.azure.net/","resource_id":"/subscriptions/<sub-id>/resourceGroups/<rg-name>/providers/Microsoft.KeyVault/vaults/<your-keyvault-name>"},"initial_manage_principal":"users"}'

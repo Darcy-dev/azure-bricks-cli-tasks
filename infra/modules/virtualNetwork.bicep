@@ -35,6 +35,7 @@ resource vnet 'Microsoft.Network/virtualNetworks@2024-01-01' = {
           ]
           serviceEndpoints: [
             { service: 'Microsoft.Storage' }
+            { service: 'Microsoft.Storage.Global' }
             { service: 'Microsoft.Sql' }
             { service: 'Microsoft.EventHub' }
           ]
@@ -57,6 +58,7 @@ resource vnet 'Microsoft.Network/virtualNetworks@2024-01-01' = {
           ]
           serviceEndpoints: [
             { service: 'Microsoft.Storage' }
+            { service: 'Microsoft.Storage.Global' }
             { service: 'Microsoft.Sql' }
             { service: 'Microsoft.EventHub' }
           ]

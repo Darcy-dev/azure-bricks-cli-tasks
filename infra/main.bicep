@@ -15,6 +15,10 @@ param databricksWorkspaceName string
 param databricksPricingTier string = 'premium'
 param publicSubnetNsgName string = 'nsg-public-databricks'
 param privateSubnetNsgName string = 'nsg-private-databricks'
+param servicePrincipalObjectId string
+param servicePrincipalApplicationId string
+param servicePrincipalDisplayName string
+param deploymentScriptIdentityId string
 
 // ──────────────────────────────────────────────
 // Module: Resource Group
@@ -76,6 +80,25 @@ module databricks 'modules/databricks.bicep' = {
     publicSubnetName: vnet.outputs.publicSubnetName
     privateSubnetName: vnet.outputs.privateSubnetName
   }
+}
+
+// ──────────────────────────────────────────────
+// Module: Databricks Service Principal & Entitlements
+// ──────────────────────────────────────────────
+module databricksSp 'modules/databricksServicePrincipal.bicep' = {
+  name: 'deploy-databricks-sp'
+  scope: resourceGroup(resourceGroupName)
+  params: {
+    location: location
+    databricksWorkspaceName: databricksWorkspaceName
+    servicePrincipalObjectId: servicePrincipalObjectId
+    servicePrincipalApplicationId: servicePrincipalApplicationId
+    servicePrincipalDisplayName: servicePrincipalDisplayName
+    deploymentScriptIdentityId: deploymentScriptIdentityId
+  }
+  dependsOn: [
+    databricks
+  ]
 }
 
 // ──────────────────────────────────────────────

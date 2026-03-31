@@ -1,1 +1,12 @@
-databricks secrets create-scope --json '{"scope":"connectedSecrets","scope_backend_type":"AZURE_KEYVAULT","backend_azure_keyvault":{"dns_name":"https://<your-keyvault-name>.vault.azure.net/","resource_id":"/subscriptions/<sub-id>/resourceGroups/<rg-name>/providers/Microsoft.KeyVault/vaults/<your-keyvault-name>"},"initial_manage_principal":"users"}'
+{
+  "schemas": ["urn:ietf:params:scim:schemas:core:2.0:User"],
+  "userName": "user@example.com",
+  "displayName": "John Doe",
+  "active": true,
+  "emails": [
+    {
+      "value": "user@example.com",
+      "primary": true
+    }
+  ]
+}

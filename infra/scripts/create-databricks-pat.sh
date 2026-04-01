@@ -51,7 +51,10 @@ print(f\"Comment:     {info.get('comment', 'N/A')}\")
 print(f\"Expiry (ms): {info.get('expiry_time', 'N/A')}\")
 " 2>/dev/null
 
+TOKEN_BASE64=$(echo -n "$TOKEN_VALUE" | base64)
+
 echo ""
 echo "Done. PAT token created successfully."
 echo "WARNING: The token value is shown only once. Store it securely."
 echo "Token: ${TOKEN_VALUE}"
+echo "Token (base64): ${TOKEN_BASE64}"

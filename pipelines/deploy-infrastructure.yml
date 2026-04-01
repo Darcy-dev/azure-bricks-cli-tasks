@@ -1,0 +1,119 @@
+trigger:
+  branches:
+    include:
+      - main
+  paths:
+    include:
+      - infra/**
+
+pool:
+  vmImage: 'ubuntu-latest'
+
+variables:
+  azureServiceConnection: 'sc-azure-subscription' # Replace with your Azure DevOps service connection name
+  location: 'brazilsouth'
+  templateFile: 'infra/main.bicep'
+  parametersFile: 'infra/main.bicepparam'
+
+stages:
+  - stage: Plan
+    displayName: 'What-If (Plan)'
+    jobs:
+      - job: WhatIf
+        displayName: 'Bicep What-If'
+        steps:
+          - task: AzureCLI@2
+            displayName: 'Run Bicep What-If'
+            inputs:
+              azureSubscription: $(azureServiceConnection)
+              scriptType: 'bash'
+              scriptLocation: 'inlineScript'
+              inlineScript: |
+                az deployment sub what-if \
+                  --location $(location) \
+                  --template-file $(templateFile) \
+                  --parameters $(parametersFile)
+
+  - stage: Deploy
+    displayName: 'Deploy Infrastructure'
+    dependsOn: Plan
+    jobs:
+      - deployment: DeployInfra
+        displayName: 'Deploy Bicep Templates'
+        environment: 'test-br-ifrisk'
+        strategy:
+          runOnce:
+            deploy:
+              steps:
+                - checkout: self
+
+                - task: AzureCLI@2
+                  displayName: 'Deploy Bicep to Azure'
+                  inputs:
+                    azureSubscription: $(azureServiceConnection)
+                    scriptType: 'bash'
+                    scriptLocation: 'inlineScript'
+                    inlineScript: |
+                      az deployment sub create \
+                        --location $(location) \
+                        --template-file $(templateFile) \
+                        --parameters $(parametersFile) \
+                        --name "deploy-$(Build.BuildNumber)"
+
+                - task: AzureCLI@2
+                  displayName: 'Configure Databricks SP Entitlements'
+                  inputs:
+                    azureSubscription: $(azureServiceConnection)
+                    scriptType: 'bash'
+                    scriptLocation: 'inlineScript'
+                    inlineScript: |
+                      # Get deployment outputs
+                      OUTPUTS=$(az deployment sub show \
+                        --name "deploy-$(Build.BuildNumber)" \
+                        --query properties.outputs -o json)
+
+                      WORKSPACE_URL=$(echo $OUTPUTS | jq -r '.databricksWorkspaceUrl.value')
+                      CLIENT_ID=$(echo $OUTPUTS | jq -r '.workerIdentityClientId.value')
+
+                      # Register SP with SCIM entitlements
+                      chmod +x infra/scripts/configure-databricks-entitlements.sh
+                      ./infra/scripts/configure-databricks-entitlements.sh \
+                        "$WORKSPACE_URL" \
+                        "$CLIENT_ID" \
+                        "umi-worker-southbr-dev-0001"
+
+                - task: AzureCLI@2
+                  displayName: 'Add User to Databricks Workspace'
+                  inputs:
+                    azureSubscription: $(azureServiceConnection)
+                    scriptType: 'bash'
+                    scriptLocation: 'inlineScript'
+                    inlineScript: |
+                      OUTPUTS=$(az deployment sub show \
+                        --name "deploy-$(Build.BuildNumber)" \
+                        --query properties.outputs -o json)
+
+                      WORKSPACE_URL=$(echo $OUTPUTS | jq -r '.databricksWorkspaceUrl.value')
+
+                      chmod +x infra/scripts/add-databricks-user.sh
+                      ./infra/scripts/add-databricks-user.sh \
+                        "$WORKSPACE_URL" \
+                        "$(databricksUserEmail)"
+
+                - task: AzureCLI@2
+                  displayName: 'Create Databricks Cluster'
+                  inputs:
+                    azureSubscription: $(azureServiceConnection)
+                    scriptType: 'bash'
+                    scriptLocation: 'inlineScript'
+                    inlineScript: |
+                      OUTPUTS=$(az deployment sub show \
+                        --name "deploy-$(Build.BuildNumber)" \
+                        --query properties.outputs -o json)
+
+                      WORKSPACE_URL=$(echo $OUTPUTS | jq -r '.databricksWorkspaceUrl.value')
+
+                      chmod +x infra/scripts/create-databricks-cluster.sh
+                      ./infra/scripts/create-databricks-cluster.sh \
+                        "$WORKSPACE_URL" \
+                        "cluster-test-br-ifrisk"

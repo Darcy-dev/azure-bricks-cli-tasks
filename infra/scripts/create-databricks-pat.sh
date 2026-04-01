@@ -21,7 +21,7 @@ DATABRICKS_HOST="https://${WORKSPACE_URL}"
 
 echo "Creating PAT token (comment='${TOKEN_COMMENT}', lifetime=${LIFETIME_SECONDS}s / $((LIFETIME_SECONDS / 86400)) days)..."
 
-RESPONSE=$(curl -sf -X POST \
+RESPONSE=$(curl -s --fail-with-body -X POST \
   "${DATABRICKS_HOST}/api/2.0/token/create" \
   -H "Authorization: Bearer $TOKEN" \
   -H "Content-Type: application/json" \

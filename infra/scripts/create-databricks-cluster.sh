@@ -21,7 +21,7 @@ TOKEN=$(az account get-access-token \
 DATABRICKS_HOST="https://${WORKSPACE_URL}"
 
 # Check if cluster with same name already exists
-EXISTING=$(curl -sf \
+EXISTING=$(curl -s --fail-with-body \
   -H "Authorization: Bearer $TOKEN" \
   "${DATABRICKS_HOST}/api/2.0/clusters/list" \
   2>/dev/null || echo '{"clusters":[]}')
@@ -40,7 +40,7 @@ else
   echo "Creating cluster '${CLUSTER_NAME}'..."
 
   # Get the latest Databricks Runtime LTS version
-  SPARK_VERSION=$(curl -sf \
+  SPARK_VERSION=$(curl -s --fail-with-body \
     -H "Authorization: Bearer $TOKEN" \
     "${DATABRICKS_HOST}/api/2.0/clusters/spark-versions" \
     | python3 -c "
@@ -54,7 +54,7 @@ print(lts[0]['key'] if lts else '15.4.x-scala2.12')
 
   echo "Using Spark version: ${SPARK_VERSION}"
 
-  RESPONSE=$(curl -sf -X POST \
+  RESPONSE=$(curl -s --fail-with-body -X POST \
     "${DATABRICKS_HOST}/api/2.0/clusters/create" \
     -H "Authorization: Bearer $TOKEN" \
     -H "Content-Type: application/json" \

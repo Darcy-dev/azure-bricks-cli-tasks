@@ -42,8 +42,6 @@ stages:
     variables:
       envName: 'dev'
       parametersFile: 'infra/main.dev.bicepparam'
-      umiName: 'umi-worker-southbr-dev-0001'
-      clusterName: 'cluster-dev-br-ifrisk'
     jobs:
       - deployment: DeployInfra
         displayName: 'Deploy (dev)'
@@ -68,22 +66,6 @@ stages:
                         --name "deploy-$(envName)-$(Build.BuildNumber)"
 
                 - task: AzureCLI@2
-                  displayName: 'Configure SP Entitlements + Admin'
-                  inputs:
-                    azureSubscription: $(azureServiceConnection)
-                    scriptType: 'bash'
-                    scriptLocation: 'inlineScript'
-                    inlineScript: |
-                      OUTPUTS=$(az deployment sub show \
-                        --name "deploy-$(envName)-$(Build.BuildNumber)" \
-                        --query properties.outputs -o json)
-                      WORKSPACE_URL=$(echo $OUTPUTS | jq -r '.databricksWorkspaceUrl.value')
-                      CLIENT_ID=$(echo $OUTPUTS | jq -r '.workerIdentityClientId.value')
-                      chmod +x infra/scripts/configure-databricks-entitlements.sh
-                      ./infra/scripts/configure-databricks-entitlements.sh \
-                        "$WORKSPACE_URL" "$CLIENT_ID" "$(umiName)"
-
-                - task: AzureCLI@2
                   displayName: 'Create PAT Token (60 days)'
                   inputs:
                     azureSubscription: $(azureServiceConnection)
@@ -97,21 +79,6 @@ stages:
                       chmod +x infra/scripts/create-databricks-pat.sh
                       ./infra/scripts/create-databricks-pat.sh \
                         "$WORKSPACE_URL" "pipeline-token-$(envName)"
-
-                - task: AzureCLI@2
-                  displayName: 'Create Databricks Cluster'
-                  inputs:
-                    azureSubscription: $(azureServiceConnection)
-                    scriptType: 'bash'
-                    scriptLocation: 'inlineScript'
-                    inlineScript: |
-                      OUTPUTS=$(az deployment sub show \
-                        --name "deploy-$(envName)-$(Build.BuildNumber)" \
-                        --query properties.outputs -o json)
-                      WORKSPACE_URL=$(echo $OUTPUTS | jq -r '.databricksWorkspaceUrl.value')
-                      chmod +x infra/scripts/create-databricks-cluster.sh
-                      ./infra/scripts/create-databricks-cluster.sh \
-                        "$WORKSPACE_URL" "$(clusterName)"
 
   # ════════════════════════════════════════════════
   #  TEST
@@ -141,8 +108,6 @@ stages:
     variables:
       envName: 'test'
       parametersFile: 'infra/main.test.bicepparam'
-      umiName: 'umi-worker-southbr-test-0001'
-      clusterName: 'cluster-test-br-ifrisk'
     jobs:
       - deployment: DeployInfra
         displayName: 'Deploy (test)'
@@ -167,22 +132,6 @@ stages:
                         --name "deploy-$(envName)-$(Build.BuildNumber)"
 
                 - task: AzureCLI@2
-                  displayName: 'Configure SP Entitlements + Admin'
-                  inputs:
-                    azureSubscription: $(azureServiceConnection)
-                    scriptType: 'bash'
-                    scriptLocation: 'inlineScript'
-                    inlineScript: |
-                      OUTPUTS=$(az deployment sub show \
-                        --name "deploy-$(envName)-$(Build.BuildNumber)" \
-                        --query properties.outputs -o json)
-                      WORKSPACE_URL=$(echo $OUTPUTS | jq -r '.databricksWorkspaceUrl.value')
-                      CLIENT_ID=$(echo $OUTPUTS | jq -r '.workerIdentityClientId.value')
-                      chmod +x infra/scripts/configure-databricks-entitlements.sh
-                      ./infra/scripts/configure-databricks-entitlements.sh \
-                        "$WORKSPACE_URL" "$CLIENT_ID" "$(umiName)"
-
-                - task: AzureCLI@2
                   displayName: 'Create PAT Token (60 days)'
                   inputs:
                     azureSubscription: $(azureServiceConnection)
@@ -196,21 +145,6 @@ stages:
                       chmod +x infra/scripts/create-databricks-pat.sh
                       ./infra/scripts/create-databricks-pat.sh \
                         "$WORKSPACE_URL" "pipeline-token-$(envName)"
-
-                - task: AzureCLI@2
-                  displayName: 'Create Databricks Cluster'
-                  inputs:
-                    azureSubscription: $(azureServiceConnection)
-                    scriptType: 'bash'
-                    scriptLocation: 'inlineScript'
-                    inlineScript: |
-                      OUTPUTS=$(az deployment sub show \
-                        --name "deploy-$(envName)-$(Build.BuildNumber)" \
-                        --query properties.outputs -o json)
-                      WORKSPACE_URL=$(echo $OUTPUTS | jq -r '.databricksWorkspaceUrl.value')
-                      chmod +x infra/scripts/create-databricks-cluster.sh
-                      ./infra/scripts/create-databricks-cluster.sh \
-                        "$WORKSPACE_URL" "$(clusterName)"
 
   # ════════════════════════════════════════════════
   #  PRD
@@ -240,8 +174,6 @@ stages:
     variables:
       envName: 'prd'
       parametersFile: 'infra/main.prd.bicepparam'
-      umiName: 'umi-worker-southbr-prd-0001'
-      clusterName: 'cluster-prd-br-ifrisk'
     jobs:
       - deployment: DeployInfra
         displayName: 'Deploy (prd)'
@@ -266,22 +198,6 @@ stages:
                         --name "deploy-$(envName)-$(Build.BuildNumber)"
 
                 - task: AzureCLI@2
-                  displayName: 'Configure SP Entitlements + Admin'
-                  inputs:
-                    azureSubscription: $(azureServiceConnection)
-                    scriptType: 'bash'
-                    scriptLocation: 'inlineScript'
-                    inlineScript: |
-                      OUTPUTS=$(az deployment sub show \
-                        --name "deploy-$(envName)-$(Build.BuildNumber)" \
-                        --query properties.outputs -o json)
-                      WORKSPACE_URL=$(echo $OUTPUTS | jq -r '.databricksWorkspaceUrl.value')
-                      CLIENT_ID=$(echo $OUTPUTS | jq -r '.workerIdentityClientId.value')
-                      chmod +x infra/scripts/configure-databricks-entitlements.sh
-                      ./infra/scripts/configure-databricks-entitlements.sh \
-                        "$WORKSPACE_URL" "$CLIENT_ID" "$(umiName)"
-
-                - task: AzureCLI@2
                   displayName: 'Create PAT Token (60 days)'
                   inputs:
                     azureSubscription: $(azureServiceConnection)
@@ -295,18 +211,3 @@ stages:
                       chmod +x infra/scripts/create-databricks-pat.sh
                       ./infra/scripts/create-databricks-pat.sh \
                         "$WORKSPACE_URL" "pipeline-token-$(envName)"
-
-                - task: AzureCLI@2
-                  displayName: 'Create Databricks Cluster'
-                  inputs:
-                    azureSubscription: $(azureServiceConnection)
-                    scriptType: 'bash'
-                    scriptLocation: 'inlineScript'
-                    inlineScript: |
-                      OUTPUTS=$(az deployment sub show \
-                        --name "deploy-$(envName)-$(Build.BuildNumber)" \
-                        --query properties.outputs -o json)
-                      WORKSPACE_URL=$(echo $OUTPUTS | jq -r '.databricksWorkspaceUrl.value')
-                      chmod +x infra/scripts/create-databricks-cluster.sh
-                      ./infra/scripts/create-databricks-cluster.sh \
-                        "$WORKSPACE_URL" "$(clusterName)"

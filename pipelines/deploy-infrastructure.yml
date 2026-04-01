@@ -15,14 +15,14 @@ variables:
   templateFile: 'infra/main.bicep'
 
 # ════════════════════════════════════════════════
-#  TEST
+#  DEV
 # ════════════════════════════════════════════════
 stages:
-  - stage: Plan_Test
-    displayName: 'Test - What-If'
+  - stage: Plan_Dev
+    displayName: 'Dev - What-If'
     jobs:
       - job: WhatIf
-        displayName: 'Bicep What-If (test)'
+        displayName: 'Bicep What-If (dev)'
         steps:
           - task: AzureCLI@2
             displayName: 'Run Bicep What-If'
@@ -34,20 +34,20 @@ stages:
                 az deployment sub what-if \
                   --location $(location) \
                   --template-file $(templateFile) \
-                  --parameters infra/main.test.bicepparam
+                  --parameters infra/main.dev.bicepparam
 
-  - stage: Deploy_Test
-    displayName: 'Test - Deploy'
-    dependsOn: Plan_Test
+  - stage: Deploy_Dev
+    displayName: 'Dev - Deploy'
+    dependsOn: Plan_Dev
     variables:
-      envName: 'test'
-      parametersFile: 'infra/main.test.bicepparam'
+      envName: 'dev'
+      parametersFile: 'infra/main.dev.bicepparam'
       umiName: 'umi-worker-southbr-dev-0001'
-      clusterName: 'cluster-test-br-ifrisk'
+      clusterName: 'cluster-dev-br-ifrisk'
     jobs:
       - deployment: DeployInfra
-        displayName: 'Deploy (test)'
-        environment: 'test-br-ifrisk'
+        displayName: 'Deploy (dev)'
+        environment: 'dev-br-ifrisk'
         strategy:
           runOnce:
             deploy:
@@ -84,7 +84,7 @@ stages:
                         "$WORKSPACE_URL" "$CLIENT_ID" "$(umiName)"
 
                 - task: AzureCLI@2
-                  displayName: 'Add User to Workspace'
+                  displayName: 'Create PAT Token (60 days)'
                   inputs:
                     azureSubscription: $(azureServiceConnection)
                     scriptType: 'bash'
@@ -94,9 +94,9 @@ stages:
                         --name "deploy-$(envName)-$(Build.BuildNumber)" \
                         --query properties.outputs -o json)
                       WORKSPACE_URL=$(echo $OUTPUTS | jq -r '.databricksWorkspaceUrl.value')
-                      chmod +x infra/scripts/add-databricks-user.sh
-                      ./infra/scripts/add-databricks-user.sh \
-                        "$WORKSPACE_URL" "$(databricksUserEmail)"
+                      chmod +x infra/scripts/create-databricks-pat.sh
+                      ./infra/scripts/create-databricks-pat.sh \
+                        "$WORKSPACE_URL" "pipeline-token-$(envName)"
 
                 - task: AzureCLI@2
                   displayName: 'Create Databricks Cluster'
@@ -113,27 +113,12 @@ stages:
                       ./infra/scripts/create-databricks-cluster.sh \
                         "$WORKSPACE_URL" "$(clusterName)"
 
-                - task: AzureCLI@2
-                  displayName: 'Create PAT Token (60 days)'
-                  inputs:
-                    azureSubscription: $(azureServiceConnection)
-                    scriptType: 'bash'
-                    scriptLocation: 'inlineScript'
-                    inlineScript: |
-                      OUTPUTS=$(az deployment sub show \
-                        --name "deploy-$(envName)-$(Build.BuildNumber)" \
-                        --query properties.outputs -o json)
-                      WORKSPACE_URL=$(echo $OUTPUTS | jq -r '.databricksWorkspaceUrl.value')
-                      chmod +x infra/scripts/create-databricks-pat.sh
-                      ./infra/scripts/create-databricks-pat.sh \
-                        "$WORKSPACE_URL" "pipeline-token-$(envName)"
-
   # ════════════════════════════════════════════════
   #  HML
   # ════════════════════════════════════════════════
   - stage: Plan_Hml
     displayName: 'HML - What-If'
-    dependsOn: Deploy_Test
+    dependsOn: Deploy_Dev
     jobs:
       - job: WhatIf
         displayName: 'Bicep What-If (hml)'
@@ -198,7 +183,7 @@ stages:
                         "$WORKSPACE_URL" "$CLIENT_ID" "$(umiName)"
 
                 - task: AzureCLI@2
-                  displayName: 'Add User to Workspace'
+                  displayName: 'Create PAT Token (60 days)'
                   inputs:
                     azureSubscription: $(azureServiceConnection)
                     scriptType: 'bash'
@@ -208,9 +193,9 @@ stages:
                         --name "deploy-$(envName)-$(Build.BuildNumber)" \
                         --query properties.outputs -o json)
                       WORKSPACE_URL=$(echo $OUTPUTS | jq -r '.databricksWorkspaceUrl.value')
-                      chmod +x infra/scripts/add-databricks-user.sh
-                      ./infra/scripts/add-databricks-user.sh \
-                        "$WORKSPACE_URL" "$(databricksUserEmail)"
+                      chmod +x infra/scripts/create-databricks-pat.sh
+                      ./infra/scripts/create-databricks-pat.sh \
+                        "$WORKSPACE_URL" "pipeline-token-$(envName)"
 
                 - task: AzureCLI@2
                   displayName: 'Create Databricks Cluster'
@@ -226,21 +211,6 @@ stages:
                       chmod +x infra/scripts/create-databricks-cluster.sh
                       ./infra/scripts/create-databricks-cluster.sh \
                         "$WORKSPACE_URL" "$(clusterName)"
-
-                - task: AzureCLI@2
-                  displayName: 'Create PAT Token (60 days)'
-                  inputs:
-                    azureSubscription: $(azureServiceConnection)
-                    scriptType: 'bash'
-                    scriptLocation: 'inlineScript'
-                    inlineScript: |
-                      OUTPUTS=$(az deployment sub show \
-                        --name "deploy-$(envName)-$(Build.BuildNumber)" \
-                        --query properties.outputs -o json)
-                      WORKSPACE_URL=$(echo $OUTPUTS | jq -r '.databricksWorkspaceUrl.value')
-                      chmod +x infra/scripts/create-databricks-pat.sh
-                      ./infra/scripts/create-databricks-pat.sh \
-                        "$WORKSPACE_URL" "pipeline-token-$(envName)"
 
   # ════════════════════════════════════════════════
   #  PRD
@@ -312,7 +282,7 @@ stages:
                         "$WORKSPACE_URL" "$CLIENT_ID" "$(umiName)"
 
                 - task: AzureCLI@2
-                  displayName: 'Add User to Workspace'
+                  displayName: 'Create PAT Token (60 days)'
                   inputs:
                     azureSubscription: $(azureServiceConnection)
                     scriptType: 'bash'
@@ -322,9 +292,9 @@ stages:
                         --name "deploy-$(envName)-$(Build.BuildNumber)" \
                         --query properties.outputs -o json)
                       WORKSPACE_URL=$(echo $OUTPUTS | jq -r '.databricksWorkspaceUrl.value')
-                      chmod +x infra/scripts/add-databricks-user.sh
-                      ./infra/scripts/add-databricks-user.sh \
-                        "$WORKSPACE_URL" "$(databricksUserEmail)"
+                      chmod +x infra/scripts/create-databricks-pat.sh
+                      ./infra/scripts/create-databricks-pat.sh \
+                        "$WORKSPACE_URL" "pipeline-token-$(envName)"
 
                 - task: AzureCLI@2
                   displayName: 'Create Databricks Cluster'
@@ -340,18 +310,3 @@ stages:
                       chmod +x infra/scripts/create-databricks-cluster.sh
                       ./infra/scripts/create-databricks-cluster.sh \
                         "$WORKSPACE_URL" "$(clusterName)"
-
-                - task: AzureCLI@2
-                  displayName: 'Create PAT Token (60 days)'
-                  inputs:
-                    azureSubscription: $(azureServiceConnection)
-                    scriptType: 'bash'
-                    scriptLocation: 'inlineScript'
-                    inlineScript: |
-                      OUTPUTS=$(az deployment sub show \
-                        --name "deploy-$(envName)-$(Build.BuildNumber)" \
-                        --query properties.outputs -o json)
-                      WORKSPACE_URL=$(echo $OUTPUTS | jq -r '.databricksWorkspaceUrl.value')
-                      chmod +x infra/scripts/create-databricks-pat.sh
-                      ./infra/scripts/create-databricks-pat.sh \
-                        "$WORKSPACE_URL" "pipeline-token-$(envName)"

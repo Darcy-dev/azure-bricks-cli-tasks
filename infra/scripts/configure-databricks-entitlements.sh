@@ -7,8 +7,8 @@
 #
 # Example:
 #   ./configure-databricks-entitlements.sh \
-#     adb-test-br-ifrisk.azuredatabricks.net \
-#     $(az identity show -n umi-worker-southbr-dev-0001 -g rg-test-br-ifrisk --query clientId -o tsv) \
+#     adb-dev-br-ifrisk.azuredatabricks.net \
+#     $(az identity show -n umi-worker-southbr-dev-0001 -g rg-dev-br-ifrisk --query clientId -o tsv) \
 #     umi-worker-southbr-dev-0001
 set -euo pipefail
 

@@ -5,8 +5,8 @@
 #   ./create-databricks-pat.sh <workspace-url> <token-comment> [lifetime-seconds]
 #
 # Example:
-#   ./create-databricks-pat.sh adb-7405608359153474.14.azuredatabricks.net pipeline-token-test
-#   ./create-databricks-pat.sh adb-7405608359153474.14.azuredatabricks.net pipeline-token-test 5184000
+#   ./create-databricks-pat.sh adb-7405608359153474.14.azuredatabricks.net pipeline-token-dev
+#   ./create-databricks-pat.sh adb-7405608359153474.14.azuredatabricks.net pipeline-token-dev 5184000
 set -euo pipefail
 
 WORKSPACE_URL="${1:?Usage: $0 <workspace-url> <token-comment> [lifetime-seconds]}"

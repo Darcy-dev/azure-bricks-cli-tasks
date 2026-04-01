@@ -5,18 +5,19 @@
 ```
 infra/
 ├── main.bicep                                  # Subscription-scoped orchestrator
-├── main.bicepparam                             # Parameter values for the test stamp
+├── main.dev.bicepparam                          # Parameter values for the dev stamp
 ├── modules/
-│   ├── resourceGroup.bicep                     # Resource group: rg-test-br-ifrisk
+│   ├── resourceGroup.bicep                     # Resource group: rg-dev-br-ifrisk
 │   ├── networkSecurityGroups.bicep             # 2 NSGs with 6 mandatory Databricks rules each
 │   ├── virtualNetwork.bicep                    # VNet + public/private subnets with delegation
 │   ├── databricks.bicep                        # Databricks workspace (premium, VNet-injected)
 │   ├── userAssignedIdentity.bicep              # User Assigned Managed Identity (worker)
 │   └── databricksServicePrincipal.bicep        # Contributor role assignment on workspace
 └── scripts/
-    ├── configure-databricks-entitlements.sh    # Post-deploy: register SP with SCIM entitlements
-    ├── add-databricks-user.sh                  # Post-deploy: add user by email to workspace
-    └── create-databricks-cluster.sh            # Post-deploy: create a Databricks cluster
+    ├── configure-databricks-entitlements.sh    # Post-deploy: register SP with SCIM entitlements + admin
+    ├── add-databricks-user.sh                  # Utility: add user by email to workspace
+    ├── create-databricks-cluster.sh            # Post-deploy: create a Databricks cluster
+    └── create-databricks-pat.sh               # Post-deploy: create PAT token (60-day expiry)
 ```
 
 ## Deployment Flow
@@ -25,14 +26,14 @@ infra/
 main.bicep (subscription scope)
 │
 ├─► resourceGroup.bicep
-│       └─ rg-test-br-ifrisk
+│       └─ rg-dev-br-ifrisk
 │
 ├─► networkSecurityGroups.bicep          (depends on: resourceGroup)
 │       ├─ nsg-public-databricks         (6 inbound/outbound rules)
 │       └─ nsg-private-databricks        (6 inbound/outbound rules)
 │
 ├─► virtualNetwork.bicep                 (depends on: NSGs)
-│       ├─ vn-test-br-ifrisk            (172.24.58.0/23)
+│       ├─ vn-dev-br-ifrisk             (172.24.58.0/23)
 │       ├─ sn-public-databricks          (172.24.58.0/24)
 │       └─ sn-private-databricks         (172.24.59.0/24)
 │
@@ -40,7 +41,7 @@ main.bicep (subscription scope)
 │       └─ umi-worker-southbr-dev-0001
 │
 ├─► databricks.bicep                     (depends on: VNet)
-│       └─ adb-test-br-ifrisk           (premium, secure cluster connectivity)
+│       └─ adb-dev-br-ifrisk            (premium, secure cluster connectivity)
 │
 └─► databricksServicePrincipal.bicep     (depends on: databricks, workerIdentity)
         └─ Contributor role assignment on workspace
@@ -50,7 +51,7 @@ main.bicep (subscription scope)
 
 | Resource              | Name                    | CIDR             |
 |-----------------------|-------------------------|------------------|
-| VNet                  | vn-test-br-ifrisk       | 172.24.58.0/23   |
+| VNet                  | vn-dev-br-ifrisk        | 172.24.58.0/23   |
 | Public subnet (host)  | sn-public-databricks    | 172.24.58.0/24   |
 | Private subnet (container) | sn-private-databricks | 172.24.59.0/24 |
 
@@ -79,7 +80,7 @@ Both subnets include:
 | Display Name  | umi-worker-southbr-dev-0001              |
 | Client ID     | 994f9c0c-c264-47ca-8ff8-14bbb27c21df    |
 | Principal ID  | 2aa6472a-eebd-41ae-929d-6b22432f3ddb    |
-| Azure RBAC    | Contributor on adb-test-br-ifrisk        |
+| Azure RBAC    | Contributor on adb-dev-br-ifrisk         |
 | Entitlements  | workspace-access, databricks-sql-access, allow-cluster-create |
 
 ## Deployment Commands
@@ -91,7 +92,7 @@ az login
 az deployment sub create \
   --location brazilsouth \
   --template-file infra/main.bicep \
-  --parameters infra/main.bicepparam
+  --parameters infra/main.dev.bicepparam
 ```
 
 ### What-if (plan)
@@ -100,23 +101,23 @@ az deployment sub create \
 az deployment sub what-if \
   --location brazilsouth \
   --template-file infra/main.bicep \
-  --parameters infra/main.bicepparam
+  --parameters infra/main.dev.bicepparam
 ```
 
 ### Post-deployment scripts
 
 ```bash
-# Register SP with Databricks SCIM entitlements
+# Register SP with Databricks SCIM entitlements + admin group
 ./infra/scripts/configure-databricks-entitlements.sh \
   <workspace-url> <client-id> <display-name>
-
-# Add a user by email to the workspace
-./infra/scripts/add-databricks-user.sh \
-  <workspace-url> <user-email>
 
 # Create a Databricks cluster
 ./infra/scripts/create-databricks-cluster.sh \
   <workspace-url> <cluster-name>
+
+# Create a PAT token (default: 60 days)
+./infra/scripts/create-databricks-pat.sh \
+  <workspace-url> <token-comment>
 ```
 
 ## Errors Encountered During Deployment

@@ -5,7 +5,7 @@
 #   ./create-databricks-cluster.sh <workspace-url> <cluster-name> [node-type] [num-workers]
 #
 # Example:
-#   ./create-databricks-cluster.sh adb-7405608359153474.14.azuredatabricks.net cluster-test-br-ifrisk
+#   ./create-databricks-cluster.sh adb-7405608359153474.14.azuredatabricks.net cluster-dev-br-ifrisk
 #   ./create-databricks-cluster.sh adb-7405608359153474.14.azuredatabricks.net my-cluster Standard_DS3_v2 2
 set -euo pipefail
 

@@ -38,6 +38,7 @@ resource vnet 'Microsoft.Network/virtualNetworks@2024-01-01' = {
             { service: 'Microsoft.Sql' }
             { service: 'Microsoft.EventHub' }
             { service: 'Microsoft.KeyVault' }
+            { service: 'Microsoft.AzureActiveDirectory' }
           ]
         }
       }
@@ -61,6 +62,7 @@ resource vnet 'Microsoft.Network/virtualNetworks@2024-01-01' = {
             { service: 'Microsoft.Sql' }
             { service: 'Microsoft.EventHub' }
             { service: 'Microsoft.KeyVault' }
+            { service: 'Microsoft.AzureActiveDirectory' }
           ]
         }
       }

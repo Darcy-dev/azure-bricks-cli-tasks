@@ -15,10 +15,7 @@ param databricksWorkspaceName string
 param databricksPricingTier string = 'premium'
 param publicSubnetNsgName string = 'nsg-public-databricks'
 param privateSubnetNsgName string = 'nsg-private-databricks'
-param servicePrincipalObjectId string
-param servicePrincipalApplicationId string
-param servicePrincipalDisplayName string
-param deploymentScriptIdentityId string
+param workerIdentityName string
 
 // ──────────────────────────────────────────────
 // Module: Resource Group
@@ -67,6 +64,21 @@ module vnet 'modules/virtualNetwork.bicep' = {
 }
 
 // ──────────────────────────────────────────────
+// Module: User Assigned Managed Identity (worker)
+// ──────────────────────────────────────────────
+module workerIdentity 'modules/userAssignedIdentity.bicep' = {
+  name: 'deploy-worker-identity'
+  scope: resourceGroup(resourceGroupName)
+  params: {
+    location: location
+    identityName: workerIdentityName
+  }
+  dependsOn: [
+    rg
+  ]
+}
+
+// ──────────────────────────────────────────────
 // Module: Azure Databricks Workspace
 // ──────────────────────────────────────────────
 module databricks 'modules/databricks.bicep' = {
@@ -83,18 +95,14 @@ module databricks 'modules/databricks.bicep' = {
 }
 
 // ──────────────────────────────────────────────
-// Module: Databricks Service Principal & Entitlements
+// Module: Databricks Service Principal RBAC
 // ──────────────────────────────────────────────
 module databricksSp 'modules/databricksServicePrincipal.bicep' = {
   name: 'deploy-databricks-sp'
   scope: resourceGroup(resourceGroupName)
   params: {
-    location: location
     databricksWorkspaceName: databricksWorkspaceName
-    servicePrincipalObjectId: servicePrincipalObjectId
-    servicePrincipalApplicationId: servicePrincipalApplicationId
-    servicePrincipalDisplayName: servicePrincipalDisplayName
-    deploymentScriptIdentityId: deploymentScriptIdentityId
+    servicePrincipalObjectId: workerIdentity.outputs.principalId
   }
   dependsOn: [
     databricks
@@ -107,3 +115,6 @@ module databricksSp 'modules/databricksServicePrincipal.bicep' = {
 output resourceGroupName string = rg.outputs.resourceGroupName
 output vnetName string = vnet.outputs.vnetName
 output databricksWorkspaceUrl string = databricks.outputs.databricksWorkspaceUrl
+output workerIdentityClientId string = workerIdentity.outputs.clientId
+output workerIdentityPrincipalId string = workerIdentity.outputs.principalId
+output workerIdentityResourceId string = workerIdentity.outputs.identityId

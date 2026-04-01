@@ -11,6 +11,8 @@ param publicSubnetName string = 'sn-public-databricks'
 param publicSubnetCidr string
 param privateSubnetName string = 'sn-private-databricks'
 param privateSubnetCidr string
+param defaultSubnetName string
+param defaultSubnetCidr string
 param databricksWorkspaceName string
 param databricksPricingTier string = 'premium'
 param publicSubnetNsgName string = 'nsg-public-databricks'
@@ -58,6 +60,8 @@ module vnet 'modules/virtualNetwork.bicep' = {
     publicSubnetCidr: publicSubnetCidr
     privateSubnetName: privateSubnetName
     privateSubnetCidr: privateSubnetCidr
+    defaultSubnetName: defaultSubnetName
+    defaultSubnetCidr: defaultSubnetCidr
     publicSubnetNsgId: nsg.outputs.publicSubnetNsgId
     privateSubnetNsgId: nsg.outputs.privateSubnetNsgId
   }

@@ -1,6 +1,7 @@
 param location string
 param publicSubnetNsgName string
 param privateSubnetNsgName string
+param defaultSubnetNsgName string
 
 resource nsgPublic 'Microsoft.Network/networkSecurityGroups@2024-01-01' = {
   name: publicSubnetNsgName
@@ -188,5 +189,14 @@ resource nsgPrivate 'Microsoft.Network/networkSecurityGroups@2024-01-01' = {
   }
 }
 
+resource nsgDefault 'Microsoft.Network/networkSecurityGroups@2024-01-01' = {
+  name: defaultSubnetNsgName
+  location: location
+  properties: {
+    securityRules: []
+  }
+}
+
 output publicSubnetNsgId string = nsgPublic.id
 output privateSubnetNsgId string = nsgPrivate.id
+output defaultSubnetNsgId string = nsgDefault.id

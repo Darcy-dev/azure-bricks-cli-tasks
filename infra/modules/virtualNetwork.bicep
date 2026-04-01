@@ -9,6 +9,7 @@ param defaultSubnetName string
 param defaultSubnetCidr string
 param publicSubnetNsgId string
 param privateSubnetNsgId string
+param defaultSubnetNsgId string
 
 resource vnet 'Microsoft.Network/virtualNetworks@2024-01-01' = {
   name: vnetName
@@ -72,6 +73,9 @@ resource vnet 'Microsoft.Network/virtualNetworks@2024-01-01' = {
         name: defaultSubnetName
         properties: {
           addressPrefix: defaultSubnetCidr
+          networkSecurityGroup: {
+            id: defaultSubnetNsgId
+          }
           serviceEndpoints: [
             { service: 'Microsoft.Storage.Global' }
             { service: 'Microsoft.Sql' }

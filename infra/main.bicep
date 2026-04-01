@@ -17,6 +17,7 @@ param databricksWorkspaceName string
 param databricksPricingTier string = 'premium'
 param publicSubnetNsgName string = 'nsg-public-databricks'
 param privateSubnetNsgName string = 'nsg-private-databricks'
+param defaultSubnetNsgName string = 'nsg-default'
 param workerIdentityName string
 
 // ──────────────────────────────────────────────
@@ -40,6 +41,7 @@ module nsg 'modules/networkSecurityGroups.bicep' = {
     location: location
     publicSubnetNsgName: publicSubnetNsgName
     privateSubnetNsgName: privateSubnetNsgName
+    defaultSubnetNsgName: defaultSubnetNsgName
   }
   dependsOn: [
     rg
@@ -64,6 +66,7 @@ module vnet 'modules/virtualNetwork.bicep' = {
     defaultSubnetCidr: defaultSubnetCidr
     publicSubnetNsgId: nsg.outputs.publicSubnetNsgId
     privateSubnetNsgId: nsg.outputs.privateSubnetNsgId
+    defaultSubnetNsgId: nsg.outputs.defaultSubnetNsgId
   }
 }
 

@@ -73,4 +73,66 @@ else
 fi
 
 echo ""
-echo "Done. Entitlements configured: workspace-access, databricks-sql-access, allow-cluster-create"
+echo "Entitlements configured: workspace-access, databricks-sql-access, allow-cluster-create"
+
+# ──────────────────────────────────────────────
+# Add SP to the Databricks admins group
+# ──────────────────────────────────────────────
+echo "Looking up admins group..."
+
+ADMIN_GROUP_RESPONSE=$(curl -sf \
+  -H "Authorization: Bearer $TOKEN" \
+  "${DATABRICKS_HOST}/api/2.0/preview/scim/v2/Groups?filter=displayName+eq+admins" \
+  2>/dev/null || echo '{"Resources":[]}')
+
+ADMIN_GROUP_ID=$(echo "$ADMIN_GROUP_RESPONSE" | python3 -c "
+import sys, json
+data = json.load(sys.stdin)
+resources = data.get('Resources', [])
+print(resources[0]['id'] if resources else '')
+" 2>/dev/null || echo "")
+
+if [ -z "$ADMIN_GROUP_ID" ]; then
+  echo "ERROR: Could not find 'admins' group in Databricks workspace."
+  exit 1
+fi
+
+# Re-fetch SP_ID in case SP was just created (POST branch doesn't capture it)
+if [ -z "$SP_ID" ]; then
+  REFETCH=$(curl -sf \
+    -H "Authorization: Bearer $TOKEN" \
+    "${DATABRICKS_HOST}/api/2.0/preview/scim/v2/ServicePrincipals?filter=applicationId+eq+${APP_ID}" \
+    2>/dev/null || echo '{"Resources":[]}')
+
+  SP_ID=$(echo "$REFETCH" | python3 -c "
+import sys, json
+data = json.load(sys.stdin)
+resources = data.get('Resources', [])
+print(resources[0]['id'] if resources else '')
+" 2>/dev/null || echo "")
+fi
+
+if [ -z "$SP_ID" ]; then
+  echo "ERROR: SP not found. Cannot add to admins group."
+  exit 1
+fi
+
+echo "Adding SP (id=$SP_ID) to admins group (id=$ADMIN_GROUP_ID)..."
+
+curl -sf -X PATCH \
+  "${DATABRICKS_HOST}/api/2.0/preview/scim/v2/Groups/${ADMIN_GROUP_ID}" \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "Content-Type: application/json" \
+  -d "{
+    \"schemas\": [\"urn:ietf:params:scim:api:messages:2.0:PatchOp\"],
+    \"Operations\": [{
+      \"op\": \"add\",
+      \"path\": \"members\",
+      \"value\": [{
+        \"value\": \"${SP_ID}\"
+      }]
+    }]
+  }"
+
+echo ""
+echo "Done. SP added as admin with entitlements: workspace-access, databricks-sql-access, allow-cluster-create"

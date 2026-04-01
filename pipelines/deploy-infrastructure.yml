@@ -10,17 +10,19 @@ pool:
   vmImage: 'ubuntu-latest'
 
 variables:
-  azureServiceConnection: 'sc-azure-subscription' # Replace with your Azure DevOps service connection name
+  azureServiceConnection: 'sc-azure-subscription'
   location: 'brazilsouth'
   templateFile: 'infra/main.bicep'
-  parametersFile: 'infra/main.bicepparam'
 
+# ════════════════════════════════════════════════
+#  TEST
+# ════════════════════════════════════════════════
 stages:
-  - stage: Plan
-    displayName: 'What-If (Plan)'
+  - stage: Plan_Test
+    displayName: 'Test - What-If'
     jobs:
       - job: WhatIf
-        displayName: 'Bicep What-If'
+        displayName: 'Bicep What-If (test)'
         steps:
           - task: AzureCLI@2
             displayName: 'Run Bicep What-If'
@@ -32,14 +34,19 @@ stages:
                 az deployment sub what-if \
                   --location $(location) \
                   --template-file $(templateFile) \
-                  --parameters $(parametersFile)
+                  --parameters infra/main.test.bicepparam
 
-  - stage: Deploy
-    displayName: 'Deploy Infrastructure'
-    dependsOn: Plan
+  - stage: Deploy_Test
+    displayName: 'Test - Deploy'
+    dependsOn: Plan_Test
+    variables:
+      envName: 'test'
+      parametersFile: 'infra/main.test.bicepparam'
+      umiName: 'umi-worker-southbr-dev-0001'
+      clusterName: 'cluster-test-br-ifrisk'
     jobs:
       - deployment: DeployInfra
-        displayName: 'Deploy Bicep Templates'
+        displayName: 'Deploy (test)'
         environment: 'test-br-ifrisk'
         strategy:
           runOnce:
@@ -58,47 +65,38 @@ stages:
                         --location $(location) \
                         --template-file $(templateFile) \
                         --parameters $(parametersFile) \
-                        --name "deploy-$(Build.BuildNumber)"
+                        --name "deploy-$(envName)-$(Build.BuildNumber)"
 
                 - task: AzureCLI@2
-                  displayName: 'Configure Databricks SP Entitlements'
+                  displayName: 'Configure SP Entitlements + Admin'
                   inputs:
                     azureSubscription: $(azureServiceConnection)
                     scriptType: 'bash'
                     scriptLocation: 'inlineScript'
                     inlineScript: |
-                      # Get deployment outputs
                       OUTPUTS=$(az deployment sub show \
-                        --name "deploy-$(Build.BuildNumber)" \
+                        --name "deploy-$(envName)-$(Build.BuildNumber)" \
                         --query properties.outputs -o json)
-
                       WORKSPACE_URL=$(echo $OUTPUTS | jq -r '.databricksWorkspaceUrl.value')
                       CLIENT_ID=$(echo $OUTPUTS | jq -r '.workerIdentityClientId.value')
-
-                      # Register SP with SCIM entitlements
                       chmod +x infra/scripts/configure-databricks-entitlements.sh
                       ./infra/scripts/configure-databricks-entitlements.sh \
-                        "$WORKSPACE_URL" \
-                        "$CLIENT_ID" \
-                        "umi-worker-southbr-dev-0001"
+                        "$WORKSPACE_URL" "$CLIENT_ID" "$(umiName)"
 
                 - task: AzureCLI@2
-                  displayName: 'Add User to Databricks Workspace'
+                  displayName: 'Add User to Workspace'
                   inputs:
                     azureSubscription: $(azureServiceConnection)
                     scriptType: 'bash'
                     scriptLocation: 'inlineScript'
                     inlineScript: |
                       OUTPUTS=$(az deployment sub show \
-                        --name "deploy-$(Build.BuildNumber)" \
+                        --name "deploy-$(envName)-$(Build.BuildNumber)" \
                         --query properties.outputs -o json)
-
                       WORKSPACE_URL=$(echo $OUTPUTS | jq -r '.databricksWorkspaceUrl.value')
-
                       chmod +x infra/scripts/add-databricks-user.sh
                       ./infra/scripts/add-databricks-user.sh \
-                        "$WORKSPACE_URL" \
-                        "$(databricksUserEmail)"
+                        "$WORKSPACE_URL" "$(databricksUserEmail)"
 
                 - task: AzureCLI@2
                   displayName: 'Create Databricks Cluster'
@@ -108,12 +106,252 @@ stages:
                     scriptLocation: 'inlineScript'
                     inlineScript: |
                       OUTPUTS=$(az deployment sub show \
-                        --name "deploy-$(Build.BuildNumber)" \
+                        --name "deploy-$(envName)-$(Build.BuildNumber)" \
                         --query properties.outputs -o json)
-
                       WORKSPACE_URL=$(echo $OUTPUTS | jq -r '.databricksWorkspaceUrl.value')
-
                       chmod +x infra/scripts/create-databricks-cluster.sh
                       ./infra/scripts/create-databricks-cluster.sh \
-                        "$WORKSPACE_URL" \
-                        "cluster-test-br-ifrisk"
+                        "$WORKSPACE_URL" "$(clusterName)"
+
+                - task: AzureCLI@2
+                  displayName: 'Create PAT Token (60 days)'
+                  inputs:
+                    azureSubscription: $(azureServiceConnection)
+                    scriptType: 'bash'
+                    scriptLocation: 'inlineScript'
+                    inlineScript: |
+                      OUTPUTS=$(az deployment sub show \
+                        --name "deploy-$(envName)-$(Build.BuildNumber)" \
+                        --query properties.outputs -o json)
+                      WORKSPACE_URL=$(echo $OUTPUTS | jq -r '.databricksWorkspaceUrl.value')
+                      chmod +x infra/scripts/create-databricks-pat.sh
+                      ./infra/scripts/create-databricks-pat.sh \
+                        "$WORKSPACE_URL" "pipeline-token-$(envName)"
+
+  # ════════════════════════════════════════════════
+  #  HML
+  # ════════════════════════════════════════════════
+  - stage: Plan_Hml
+    displayName: 'HML - What-If'
+    dependsOn: Deploy_Test
+    jobs:
+      - job: WhatIf
+        displayName: 'Bicep What-If (hml)'
+        steps:
+          - task: AzureCLI@2
+            displayName: 'Run Bicep What-If'
+            inputs:
+              azureSubscription: $(azureServiceConnection)
+              scriptType: 'bash'
+              scriptLocation: 'inlineScript'
+              inlineScript: |
+                az deployment sub what-if \
+                  --location $(location) \
+                  --template-file $(templateFile) \
+                  --parameters infra/main.hml.bicepparam
+
+  - stage: Deploy_Hml
+    displayName: 'HML - Deploy'
+    dependsOn: Plan_Hml
+    variables:
+      envName: 'hml'
+      parametersFile: 'infra/main.hml.bicepparam'
+      umiName: 'umi-worker-southbr-hml-0001'
+      clusterName: 'cluster-hml-br-ifrisk'
+    jobs:
+      - deployment: DeployInfra
+        displayName: 'Deploy (hml)'
+        environment: 'hml-br-ifrisk'
+        strategy:
+          runOnce:
+            deploy:
+              steps:
+                - checkout: self
+
+                - task: AzureCLI@2
+                  displayName: 'Deploy Bicep to Azure'
+                  inputs:
+                    azureSubscription: $(azureServiceConnection)
+                    scriptType: 'bash'
+                    scriptLocation: 'inlineScript'
+                    inlineScript: |
+                      az deployment sub create \
+                        --location $(location) \
+                        --template-file $(templateFile) \
+                        --parameters $(parametersFile) \
+                        --name "deploy-$(envName)-$(Build.BuildNumber)"
+
+                - task: AzureCLI@2
+                  displayName: 'Configure SP Entitlements + Admin'
+                  inputs:
+                    azureSubscription: $(azureServiceConnection)
+                    scriptType: 'bash'
+                    scriptLocation: 'inlineScript'
+                    inlineScript: |
+                      OUTPUTS=$(az deployment sub show \
+                        --name "deploy-$(envName)-$(Build.BuildNumber)" \
+                        --query properties.outputs -o json)
+                      WORKSPACE_URL=$(echo $OUTPUTS | jq -r '.databricksWorkspaceUrl.value')
+                      CLIENT_ID=$(echo $OUTPUTS | jq -r '.workerIdentityClientId.value')
+                      chmod +x infra/scripts/configure-databricks-entitlements.sh
+                      ./infra/scripts/configure-databricks-entitlements.sh \
+                        "$WORKSPACE_URL" "$CLIENT_ID" "$(umiName)"
+
+                - task: AzureCLI@2
+                  displayName: 'Add User to Workspace'
+                  inputs:
+                    azureSubscription: $(azureServiceConnection)
+                    scriptType: 'bash'
+                    scriptLocation: 'inlineScript'
+                    inlineScript: |
+                      OUTPUTS=$(az deployment sub show \
+                        --name "deploy-$(envName)-$(Build.BuildNumber)" \
+                        --query properties.outputs -o json)
+                      WORKSPACE_URL=$(echo $OUTPUTS | jq -r '.databricksWorkspaceUrl.value')
+                      chmod +x infra/scripts/add-databricks-user.sh
+                      ./infra/scripts/add-databricks-user.sh \
+                        "$WORKSPACE_URL" "$(databricksUserEmail)"
+
+                - task: AzureCLI@2
+                  displayName: 'Create Databricks Cluster'
+                  inputs:
+                    azureSubscription: $(azureServiceConnection)
+                    scriptType: 'bash'
+                    scriptLocation: 'inlineScript'
+                    inlineScript: |
+                      OUTPUTS=$(az deployment sub show \
+                        --name "deploy-$(envName)-$(Build.BuildNumber)" \
+                        --query properties.outputs -o json)
+                      WORKSPACE_URL=$(echo $OUTPUTS | jq -r '.databricksWorkspaceUrl.value')
+                      chmod +x infra/scripts/create-databricks-cluster.sh
+                      ./infra/scripts/create-databricks-cluster.sh \
+                        "$WORKSPACE_URL" "$(clusterName)"
+
+                - task: AzureCLI@2
+                  displayName: 'Create PAT Token (60 days)'
+                  inputs:
+                    azureSubscription: $(azureServiceConnection)
+                    scriptType: 'bash'
+                    scriptLocation: 'inlineScript'
+                    inlineScript: |
+                      OUTPUTS=$(az deployment sub show \
+                        --name "deploy-$(envName)-$(Build.BuildNumber)" \
+                        --query properties.outputs -o json)
+                      WORKSPACE_URL=$(echo $OUTPUTS | jq -r '.databricksWorkspaceUrl.value')
+                      chmod +x infra/scripts/create-databricks-pat.sh
+                      ./infra/scripts/create-databricks-pat.sh \
+                        "$WORKSPACE_URL" "pipeline-token-$(envName)"
+
+  # ════════════════════════════════════════════════
+  #  PRD
+  # ════════════════════════════════════════════════
+  - stage: Plan_Prd
+    displayName: 'PRD - What-If'
+    dependsOn: Deploy_Hml
+    jobs:
+      - job: WhatIf
+        displayName: 'Bicep What-If (prd)'
+        steps:
+          - task: AzureCLI@2
+            displayName: 'Run Bicep What-If'
+            inputs:
+              azureSubscription: $(azureServiceConnection)
+              scriptType: 'bash'
+              scriptLocation: 'inlineScript'
+              inlineScript: |
+                az deployment sub what-if \
+                  --location $(location) \
+                  --template-file $(templateFile) \
+                  --parameters infra/main.prd.bicepparam
+
+  - stage: Deploy_Prd
+    displayName: 'PRD - Deploy'
+    dependsOn: Plan_Prd
+    variables:
+      envName: 'prd'
+      parametersFile: 'infra/main.prd.bicepparam'
+      umiName: 'umi-worker-southbr-prd-0001'
+      clusterName: 'cluster-prd-br-ifrisk'
+    jobs:
+      - deployment: DeployInfra
+        displayName: 'Deploy (prd)'
+        environment: 'prd-br-ifrisk'
+        strategy:
+          runOnce:
+            deploy:
+              steps:
+                - checkout: self
+
+                - task: AzureCLI@2
+                  displayName: 'Deploy Bicep to Azure'
+                  inputs:
+                    azureSubscription: $(azureServiceConnection)
+                    scriptType: 'bash'
+                    scriptLocation: 'inlineScript'
+                    inlineScript: |
+                      az deployment sub create \
+                        --location $(location) \
+                        --template-file $(templateFile) \
+                        --parameters $(parametersFile) \
+                        --name "deploy-$(envName)-$(Build.BuildNumber)"
+
+                - task: AzureCLI@2
+                  displayName: 'Configure SP Entitlements + Admin'
+                  inputs:
+                    azureSubscription: $(azureServiceConnection)
+                    scriptType: 'bash'
+                    scriptLocation: 'inlineScript'
+                    inlineScript: |
+                      OUTPUTS=$(az deployment sub show \
+                        --name "deploy-$(envName)-$(Build.BuildNumber)" \
+                        --query properties.outputs -o json)
+                      WORKSPACE_URL=$(echo $OUTPUTS | jq -r '.databricksWorkspaceUrl.value')
+                      CLIENT_ID=$(echo $OUTPUTS | jq -r '.workerIdentityClientId.value')
+                      chmod +x infra/scripts/configure-databricks-entitlements.sh
+                      ./infra/scripts/configure-databricks-entitlements.sh \
+                        "$WORKSPACE_URL" "$CLIENT_ID" "$(umiName)"
+
+                - task: AzureCLI@2
+                  displayName: 'Add User to Workspace'
+                  inputs:
+                    azureSubscription: $(azureServiceConnection)
+                    scriptType: 'bash'
+                    scriptLocation: 'inlineScript'
+                    inlineScript: |
+                      OUTPUTS=$(az deployment sub show \
+                        --name "deploy-$(envName)-$(Build.BuildNumber)" \
+                        --query properties.outputs -o json)
+                      WORKSPACE_URL=$(echo $OUTPUTS | jq -r '.databricksWorkspaceUrl.value')
+                      chmod +x infra/scripts/add-databricks-user.sh
+                      ./infra/scripts/add-databricks-user.sh \
+                        "$WORKSPACE_URL" "$(databricksUserEmail)"
+
+                - task: AzureCLI@2
+                  displayName: 'Create Databricks Cluster'
+                  inputs:
+                    azureSubscription: $(azureServiceConnection)
+                    scriptType: 'bash'
+                    scriptLocation: 'inlineScript'
+                    inlineScript: |
+                      OUTPUTS=$(az deployment sub show \
+                        --name "deploy-$(envName)-$(Build.BuildNumber)" \
+                        --query properties.outputs -o json)
+                      WORKSPACE_URL=$(echo $OUTPUTS | jq -r '.databricksWorkspaceUrl.value')
+                      chmod +x infra/scripts/create-databricks-cluster.sh
+                      ./infra/scripts/create-databricks-cluster.sh \
+                        "$WORKSPACE_URL" "$(clusterName)"
+
+                - task: AzureCLI@2
+                  displayName: 'Create PAT Token (60 days)'
+                  inputs:
+                    azureSubscription: $(azureServiceConnection)
+                    scriptType: 'bash'
+                    scriptLocation: 'inlineScript'
+                    inlineScript: |
+                      OUTPUTS=$(az deployment sub show \
+                        --name "deploy-$(envName)-$(Build.BuildNumber)" \
+                        --query properties.outputs -o json)
+                      WORKSPACE_URL=$(echo $OUTPUTS | jq -r '.databricksWorkspaceUrl.value')
+                      chmod +x infra/scripts/create-databricks-pat.sh
+                      ./infra/scripts/create-databricks-pat.sh \
+                        "$WORKSPACE_URL" "pipeline-token-$(envName)"

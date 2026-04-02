@@ -7,7 +7,7 @@ trigger:
       - infra/**
 
 pool:
-  name: 'Default'
+  name: 'ubuntu-latest'
 
 variables:
   azureServiceConnection: 'sc-azure-subscription'

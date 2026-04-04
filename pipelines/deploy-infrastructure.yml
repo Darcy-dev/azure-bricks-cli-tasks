@@ -6,8 +6,7 @@ trigger:
     include:
       - infra/**
 
-pool:
-  name: 'ubuntu-latest'
+pool: Azure Pipelines 1
 
 variables:
   azureServiceConnection: 'sc-azure-subscription'

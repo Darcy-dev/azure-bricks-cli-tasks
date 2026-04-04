@@ -6,7 +6,8 @@ trigger:
     include:
       - infra/**
 
-pool: Azure Pipelines 1
+pool:
+  name: 'Azure Pipelines 1'
 
 variables:
   azureServiceConnection: 'sc-azure-subscription'

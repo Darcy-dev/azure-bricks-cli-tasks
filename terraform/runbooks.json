@@ -1,0 +1,27 @@
+{
+  "list-resource-groups.ps1": {
+    "name": "List-ResourceGroups",
+    "description": "Lists all resource groups in the subscription",
+    "runbook_type": "PowerShell72"
+  },
+  "stop-idle-vms.ps1": {
+    "name": "Stop-IdleVMs",
+    "description": "Stops all running VMs in the subscription",
+    "runbook_type": "PowerShell72"
+  },
+  "cleanup-unused-disks.ps1": {
+    "name": "Cleanup-UnusedDisks",
+    "description": "Finds and removes unattached managed disks",
+    "runbook_type": "PowerShell72"
+  },
+  "check-tag-compliance.ps1": {
+    "name": "Check-TagCompliance",
+    "description": "Reports resources missing required tags (Environment, Owner, CostCenter)",
+    "runbook_type": "PowerShell72"
+  },
+  "export-cost-report.ps1": {
+    "name": "Export-CostReport",
+    "description": "Exports 30-day cost and usage summary grouped by Azure service",
+    "runbook_type": "PowerShell72"
+  }
+}

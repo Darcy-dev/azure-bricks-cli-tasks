@@ -7,8 +7,11 @@ Runbooks are managed via Terraform using a `for_each` pattern driven by a JSON m
 ```
 terraform/
 ├── main.tf              # for_each over runbooks.json
-├── runbooks.json         # manifest: filename -> {name, description, runbook_type}
-├── sync_runbooks.py      # helper to keep manifest in sync
+├── variables.tf         # input variable definitions
+├── nonprod.tfvars       # non-prod environment values (s00175nonprod)
+├── prod.tfvars          # prod environment values (s00175prod)
+├── runbooks.json        # manifest: filename -> {name, description, runbook_type}
+├── sync_runbooks.py     # helper to keep manifest in sync
 └── runbooks/
     ├── list-resource-groups.ps1
     ├── stop-idle-vms.ps1
@@ -92,12 +95,27 @@ Filenames use kebab-case and map to PascalCase runbook names:
 
 ## Deployment
 
+Each environment uses its own `-var-file` to target the correct automation account:
+
 ```bash
 cd terraform
 terraform init
-terraform plan    # review changes
-terraform apply   # deploy
+
+# Non-prod
+terraform plan  -var-file=nonprod.tfvars
+terraform apply -var-file=nonprod.tfvars
+
+# Prod
+terraform plan  -var-file=prod.tfvars
+terraform apply -var-file=prod.tfvars
 ```
+
+The CI/CD pipeline (`pipelines/deploy-automation-account.yml`) deploys non-prod first, then prod, with environment gates for approval.
+
+| Environment | Automation Account | Resource Group |
+|-------------|-------------------|----------------|
+| Non-Prod | s00175nonprod | rg-devops-agents |
+| Prod | s00175prod | rg-devops-agents |
 
 ## Runbook Inventory
 

@@ -1,0 +1,104 @@
+trigger:
+  branches:
+    include:
+      - main
+  paths:
+    include:
+      - terraform/**
+
+pool:
+  name: 'Azure Pipelines 1'
+
+variables:
+  azureServiceConnection: 'sc-azure-subscription'
+  terraformWorkingDir: 'terraform'
+
+# ════════════════════════════════════════════════
+#  NON-PROD
+# ════════════════════════════════════════════════
+stages:
+  - stage: Plan_NonProd
+    displayName: 'NonProd - Terraform Plan'
+    jobs:
+      - job: Plan
+        displayName: 'Terraform Plan (nonprod)'
+        steps:
+          - task: AzureCLI@2
+            displayName: 'Terraform Init & Plan'
+            inputs:
+              azureSubscription: $(azureServiceConnection)
+              scriptType: 'bash'
+              scriptLocation: 'inlineScript'
+              workingDirectory: $(terraformWorkingDir)
+              inlineScript: |
+                terraform init
+                terraform plan -var-file=nonprod.tfvars -out=nonprod.tfplan
+
+  - stage: Deploy_NonProd
+    displayName: 'NonProd - Terraform Apply'
+    dependsOn: Plan_NonProd
+    jobs:
+      - deployment: DeployAutomation
+        displayName: 'Apply (nonprod)'
+        environment: 'automation-nonprod'
+        strategy:
+          runOnce:
+            deploy:
+              steps:
+                - checkout: self
+
+                - task: AzureCLI@2
+                  displayName: 'Terraform Init & Apply'
+                  inputs:
+                    azureSubscription: $(azureServiceConnection)
+                    scriptType: 'bash'
+                    scriptLocation: 'inlineScript'
+                    workingDirectory: $(terraformWorkingDir)
+                    inlineScript: |
+                      terraform init
+                      terraform apply -var-file=nonprod.tfvars -auto-approve
+
+  # ════════════════════════════════════════════════
+  #  PROD
+  # ════════════════════════════════════════════════
+  - stage: Plan_Prod
+    displayName: 'Prod - Terraform Plan'
+    dependsOn: Deploy_NonProd
+    jobs:
+      - job: Plan
+        displayName: 'Terraform Plan (prod)'
+        steps:
+          - task: AzureCLI@2
+            displayName: 'Terraform Init & Plan'
+            inputs:
+              azureSubscription: $(azureServiceConnection)
+              scriptType: 'bash'
+              scriptLocation: 'inlineScript'
+              workingDirectory: $(terraformWorkingDir)
+              inlineScript: |
+                terraform init
+                terraform plan -var-file=prod.tfvars -out=prod.tfplan
+
+  - stage: Deploy_Prod
+    displayName: 'Prod - Terraform Apply'
+    dependsOn: Plan_Prod
+    jobs:
+      - deployment: DeployAutomation
+        displayName: 'Apply (prod)'
+        environment: 'automation-prod'
+        strategy:
+          runOnce:
+            deploy:
+              steps:
+                - checkout: self
+
+                - task: AzureCLI@2
+                  displayName: 'Terraform Init & Apply'
+                  inputs:
+                    azureSubscription: $(azureServiceConnection)
+                    scriptType: 'bash'
+                    scriptLocation: 'inlineScript'
+                    workingDirectory: $(terraformWorkingDir)
+                    inlineScript: |
+                      terraform init
+                      terraform apply -var-file=prod.tfvars -auto-approve

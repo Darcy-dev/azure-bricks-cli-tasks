@@ -6,11 +6,10 @@ variable "subscription_id" {
 variable "resource_group_name" {
   description = "Existing resource group name"
   type        = string
-  default     = "rg-devops-agents"
 }
 
 variable "automation_account_location" {
-  description = "Location for the Automation Account (Free Trial restriction)"
+  description = "Location for the Automation Account"
   type        = string
   default     = "eastus"
 }
@@ -18,5 +17,4 @@ variable "automation_account_location" {
 variable "automation_account_name" {
   description = "Name of the Automation Account"
   type        = string
-  default     = "s00175nonprod"
 }

@@ -11,7 +11,6 @@ variable "resource_group_name" {
 variable "automation_account_location" {
   description = "Location for the Automation Account"
   type        = string
-  default     = "eastus"
 }
 
 variable "automation_account_name" {

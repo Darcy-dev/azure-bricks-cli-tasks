@@ -7,11 +7,6 @@ terraform {
   }
 }
 
-provider "azurerm" {
-  features {}
-  subscription_id = var.subscription_id
-}
-
 data "azurerm_resource_group" "existing" {
   name = var.resource_group_name
 }
@@ -28,7 +23,7 @@ resource "azurerm_automation_account" "this" {
 }
 
 locals {
-  runbooks = jsondecode(file("${path.module}/runbooks.json"))
+  runbooks = jsondecode(file("${path.module}/../../runbooks.json"))
 }
 
 resource "azurerm_automation_runbook" "this" {
@@ -41,21 +36,5 @@ resource "azurerm_automation_runbook" "this" {
   log_progress            = true
   runbook_type            = each.value.runbook_type
   description             = each.value.description
-  content                 = file("${path.module}/runbooks/${each.key}")
-}
-
-output "automation_account_id" {
-  value = azurerm_automation_account.this.id
-}
-
-output "automation_account_name" {
-  value = azurerm_automation_account.this.name
-}
-
-output "identity_principal_id" {
-  value = azurerm_automation_account.this.identity[0].principal_id
-}
-
-output "runbook_names" {
-  value = [for rb in azurerm_automation_runbook.this : rb.name]
+  content                 = file("${path.module}/../../runbooks/${each.key}")
 }

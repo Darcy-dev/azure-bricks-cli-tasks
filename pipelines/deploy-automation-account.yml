@@ -11,7 +11,6 @@ pool:
 
 variables:
   azureServiceConnection: 'sc-azure-subscription'
-  terraformWorkingDir: 'terraform'
 
 # ════════════════════════════════════════════════
 #  NON-PROD
@@ -29,10 +28,10 @@ stages:
               azureSubscription: $(azureServiceConnection)
               scriptType: 'bash'
               scriptLocation: 'inlineScript'
-              workingDirectory: $(terraformWorkingDir)
+              workingDirectory: 'terraform/environments/nonprod'
               inlineScript: |
                 terraform init
-                terraform plan -var-file=nonprod.tfvars -out=nonprod.tfplan
+                terraform plan -out=nonprod.tfplan
 
   - stage: Deploy_NonProd
     displayName: 'NonProd - Terraform Apply'
@@ -53,10 +52,10 @@ stages:
                     azureSubscription: $(azureServiceConnection)
                     scriptType: 'bash'
                     scriptLocation: 'inlineScript'
-                    workingDirectory: $(terraformWorkingDir)
+                    workingDirectory: 'terraform/environments/nonprod'
                     inlineScript: |
                       terraform init
-                      terraform apply -var-file=nonprod.tfvars -auto-approve
+                      terraform apply -auto-approve
 
   # ════════════════════════════════════════════════
   #  PROD
@@ -74,10 +73,10 @@ stages:
               azureSubscription: $(azureServiceConnection)
               scriptType: 'bash'
               scriptLocation: 'inlineScript'
-              workingDirectory: $(terraformWorkingDir)
+              workingDirectory: 'terraform/environments/prod'
               inlineScript: |
                 terraform init
-                terraform plan -var-file=prod.tfvars -out=prod.tfplan
+                terraform plan -out=prod.tfplan
 
   - stage: Deploy_Prod
     displayName: 'Prod - Terraform Apply'
@@ -98,7 +97,7 @@ stages:
                     azureSubscription: $(azureServiceConnection)
                     scriptType: 'bash'
                     scriptLocation: 'inlineScript'
-                    workingDirectory: $(terraformWorkingDir)
+                    workingDirectory: 'terraform/environments/prod'
                     inlineScript: |
                       terraform init
-                      terraform apply -var-file=prod.tfvars -auto-approve
+                      terraform apply -auto-approve

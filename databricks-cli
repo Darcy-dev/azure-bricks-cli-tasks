@@ -1,78 +1,38 @@
-  <#
-    Copies Automation Account variables across subscriptions.
-    Source:      s00175autovm  (sub 535d8f2e-f08c-4475-8608-3b8136d13cbd)
-    Destination: s00175prod    (sub f3bee883-599d-42ef-aeb7-d5fe4abeb4ea)
-  #>
-
-  param([switch]$WhatIf)
-
-  $ErrorActionPreference = "Stop"
-
-  $SrcSub = "535d8f2e-f08c-4475-8608-3b8136d13cbd"
-  $SrcRg  = "s00175rgsfd02-1"
-  $SrcAa  = "s00175autovm"
-
   $DstSub = "f3bee883-599d-42ef-aeb7-d5fe4abeb4ea"
   $DstRg  = "s00175rg-automation"
   $DstAa  = "s00175prod"
+  $Api    = "2023-11-01"
 
-  $ApiVersion = "2023-11-01"
+  # Names of encrypted variables to migrate
+  $EncryptedNames = @(
+      "apiSecret",
+      "connectionString",
+      "anotherSecret"
+  )
 
-  $srcBase = "https://management.azure.com/subscriptions/$SrcSub/resourceGroups/$SrcRg/providers/Microsoft.Automation/automationAccounts/$SrcAa/variables"
-  $dstBase = "https://management.azure.com/subscriptions/$DstSub/resourceGroups/$DstRg/providers/Microsoft.Automation/automationAccounts/$DstAa/variables"
+  Connect-AzAccount -Identity | Out-Null
+  $token = (Get-AzAccessToken -ResourceUrl "https://management.azure.com/").Token
+  $headers = @{ Authorization = "Bearer $token"; "Content-Type" = "application/json" }
 
-  Write-Host "Fetching variables from $SrcAa..." -ForegroundColor Cyan
-  $listJson = az rest --method get --url "${srcBase}?api-version=$ApiVersion"
-  if ($LASTEXITCODE -ne 0) { throw "Failed to list source variables." }
-  $list = $listJson | ConvertFrom-Json
-  Write-Host "Found $($list.value.Count) variables." -ForegroundColor Cyan
-
-  $copied = 0; $skipped = 0; $failed = 0
-
-  foreach ($v in $list.value) {
-      $name  = $v.name
-      $props = $v.properties
-
-      if ($props.isEncrypted -or -not $props.value) {
-          Write-Host "SKIP (encrypted or unreadable): $name" -ForegroundColor Yellow
-          $skipped++
-          continue
-      }
+  foreach ($n in $EncryptedNames) {
+      $plain = Get-AutomationVariable -Name $n
+      if ($null -eq $plain) { Write-Warning "Not found: $n"; continue }
 
       $body = @{
-          name       = $name
+          name       = $n
           properties = @{
-              value       = $props.value
-              description = [string]$props.description
-              isEncrypted = $false
+              value       = ($plain | ConvertTo-Json -Compress)  # JSON-encode
+              isEncrypted = $true
+              description = "Migrated from source AA"
           }
       } | ConvertTo-Json -Depth 5 -Compress
 
-      if ($WhatIf) {
-          Write-Host "WhatIf: would create $name = $($props.value)" -ForegroundColor Magenta
-          continue
-      }
+      $url = "https://management.azure.com/subscriptions/$DstSub/resourceGroups/$DstRg/providers/Microsoft.Automation/automationAccounts/$DstAa/variables/$n`?api-version=$Api"
 
-      $tmp = New-TemporaryFile
       try {
-          Set-Content -Path $tmp.FullName -Value $body -Encoding utf8
-          az rest --method put `
-              --url  "$dstBase/$name`?api-version=$ApiVersion" `
-              --body "@$($tmp.FullName)" `
-              --headers "Content-Type=application/json" `
-              -o none
-
-          if ($LASTEXITCODE -eq 0) {
-              Write-Host "Copied: $name" -ForegroundColor Green
-              $copied++
-          } else {
-              Write-Host "FAILED: $name" -ForegroundColor Red
-              $failed++
-          }
-      } finally {
-          Remove-Item $tmp.FullName -ErrorAction SilentlyContinue
+          Invoke-RestMethod -Method Put -Uri $url -Headers $headers -Body $body | Out-Null
+          Write-Output "Migrated: $n"
+      } catch {
+          Write-Error "Failed $n : $_"
       }
   }
-
-  Write-Host ""
-  Write-Host "Summary: copied=$copied  skipped=$skipped  failed=$failed" -ForegroundColor Cyan

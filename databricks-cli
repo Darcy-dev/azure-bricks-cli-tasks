@@ -1,43 +1,41 @@
-set -euo pipefail
+  $SrcRg = "s00175rgsfd02-1"
+  $SrcAa = "s00175autovm"
+  $DstRg = "s00175rg-automation"
+  $DstAa = "s00175prod"
 
-  SRC_RG="source-rg"
-  SRC_AA="source-automation-account"
-  DST_RG="dest-rg"
-  DST_AA="dest-automation-account"
+  Write-Host "Fetching variables from $SrcAa..." -ForegroundColor Cyan
+  $vars = az automation variable list `
+      --resource-group $SrcRg `
+      --automation-account-name $SrcAa `
+      -o json | ConvertFrom-Json
 
-  # Sanity check
-  command -v az >/dev/null || { echo "az cli not found"; exit 1; }
-  command -v jq >/dev/null || { echo "jq not found"; exit 1; }
+  Write-Host "Found $($vars.Count) variables." -ForegroundColor Cyan
 
-  echo "Fetching variables from $SRC_AA..."
-  vars=$(az automation variable list \
-      --resource-group "$SRC_RG" \
-      --automation-account-name "$SRC_AA" \
-      -o json)
-
-  count=$(echo "$vars" | jq 'length')
-  echo "Found $count variables."
-
-  echo "$vars" | jq -c '.[]' | while read -r var; do
-      name=$(echo "$var"      | jq -r '.name')
-      value=$(echo "$var"     | jq -r '.value')
-      desc=$(echo "$var"      | jq -r '.description // ""')
-      encrypted=$(echo "$var" | jq -r '.isEncrypted')
-
-      if [[ "$encrypted" == "true" || "$value" == "null" ]]; then
-          echo "SKIP (encrypted or unreadable): $name"
+  foreach ($v in $vars) {
+      if ($v.isEncrypted -or -not $v.value) {
+          Write-Host "SKIP (encrypted or unreadable): $($v.name)" -ForegroundColor Yellow
           continue
-      fi
+      }
 
-      echo "Copying: $name"
-      az automation variable create \
-          --resource-group "$DST_RG" \
-          --automation-account-name "$DST_AA" \
-          --name "$name" \
-          --value "$value" \
-          --description "$desc" \
-          --is-encrypted false \
-          -o none || echo "  FAILED: $name"
-  done
+      Write-Host "Copying: $($v.name)" -ForegroundColor Green
 
-  echo "Done."
+      # az expects a JSON-encoded value (strings must be quoted)
+      $jsonValue = $v.value | ConvertTo-Json -Compress
+
+      $desc = if ($v.description) { $v.description } else { "" }
+
+      az automation variable create `
+          --resource-group $DstRg `
+          --automation-account-name $DstAa `
+          --name $v.name `
+          --value $jsonValue `
+          --description $desc `
+          --is-encrypted false `
+          -o none
+
+      if ($LASTEXITCODE -ne 0) {
+          Write-Host "  FAILED: $($v.name)" -ForegroundColor Red
+      }
+  }
+
+  Write-Host "Done." -ForegroundColor Cyan

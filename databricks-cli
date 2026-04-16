@@ -1,52 +1,43 @@
-  $SrcRg = "source-rg"
-  $SrcAa = "source-automation-account"
-  $DstRg = "dest-rg"
-  $DstAa = "dest-automation-account"
+set -euo pipefail
 
-  $vars = az automation variable list `
-      --resource-group $SrcRg `
-      --automation-account-name $SrcAa `
-      -o json | ConvertFrom-Json
+  SRC_RG="source-rg"
+  SRC_AA="source-automation-account"
+  DST_RG="dest-rg"
+  DST_AA="dest-automation-account"
 
-  foreach ($v in $vars) {
-      if ($v.isEncrypted -or -not $v.value) {
-          Write-Host "SKIP (encrypted or unreadable): $($v.name)" -ForegroundColor Yellow
+  # Sanity check
+  command -v az >/dev/null || { echo "az cli not found"; exit 1; }
+  command -v jq >/dev/null || { echo "jq not found"; exit 1; }
+
+  echo "Fetching variables from $SRC_AA..."
+  vars=$(az automation variable list \
+      --resource-group "$SRC_RG" \
+      --automation-account-name "$SRC_AA" \
+      -o json)
+
+  count=$(echo "$vars" | jq 'length')
+  echo "Found $count variables."
+
+  echo "$vars" | jq -c '.[]' | while read -r var; do
+      name=$(echo "$var"      | jq -r '.name')
+      value=$(echo "$var"     | jq -r '.value')
+      desc=$(echo "$var"      | jq -r '.description // ""')
+      encrypted=$(echo "$var" | jq -r '.isEncrypted')
+
+      if [[ "$encrypted" == "true" || "$value" == "null" ]]; then
+          echo "SKIP (encrypted or unreadable): $name"
           continue
-      }
+      fi
 
-      Write-Host "Copying: $($v.name)" -ForegroundColor Cyan
+      echo "Copying: $name"
+      az automation variable create \
+          --resource-group "$DST_RG" \
+          --automation-account-name "$DST_AA" \
+          --name "$name" \
+          --value "$value" \
+          --description "$desc" \
+          --is-encrypted false \
+          -o none || echo "  FAILED: $name"
+  done
 
-      # az expects JSON-encoded values; wrap strings in quotes
-      $jsonValue = $v.value | ConvertTo-Json -Compress
-
-      az automation variable create `
-          --resource-group $DstRg `
-          --automation-account-name $DstAa `
-          --name $v.name `
-          --value $jsonValue `
-          --description ($v.description ?? "") `
-          --is-encrypted false `
-          -o none
-  }
-
-  Alternative using the Az PowerShell module (cleaner, and can read encrypted values' metadata but still not plaintext):
-
-  Import-Module Az.Automation
-
-  $SrcRg = "source-rg"; $SrcAa = "source-automation-account"
-  $DstRg = "dest-rg";   $DstAa = "dest-automation-account"
-
-  Get-AzAutomationVariable -ResourceGroupName $SrcRg -AutomationAccountName $SrcAa | ForEach-Object {
-      if ($_.Encrypted) {
-          Write-Warning "SKIP (encrypted): $($_.Name)"
-          return
-      }
-      Write-Host "Copying: $($_.Name)"
-      New-AzAutomationVariable `
-          -ResourceGroupName $DstRg `
-          -AutomationAccountName $DstAa `
-          -Name $_.Name `
-          -Value $_.Value `
-          -Encrypted $false `
-          -Description $_.Description | Out-Null
-  }
+  echo "Done."

@@ -1,0 +1,213 @@
+trigger:
+  branches:
+    include:
+      - main
+  paths:
+    include:
+      - infra/**
+
+pool:
+  name: 'Azure Pipelines 1'
+
+variables:
+  azureServiceConnection: 'sc-azure-subscription'
+  location: 'brazilsouth'
+  templateFile: 'infra/main.bicep'
+
+# ════════════════════════════════════════════════
+#  DEV
+# ════════════════════════════════════════════════
+stages:
+  - stage: Plan_Dev
+    displayName: 'Dev - What-If'
+    jobs:
+      - job: WhatIf
+        displayName: 'Bicep What-If (dev)'
+        steps:
+          - task: AzureCLI@2
+            displayName: 'Run Bicep What-If'
+            inputs:
+              azureSubscription: $(azureServiceConnection)
+              scriptType: 'bash'
+              scriptLocation: 'inlineScript'
+              inlineScript: |
+                az deployment sub what-if \
+                  --location $(location) \
+                  --template-file $(templateFile) \
+                  --parameters infra/main.dev.bicepparam
+
+  - stage: Deploy_Dev
+    displayName: 'Dev - Deploy'
+    dependsOn: Plan_Dev
+    variables:
+      envName: 'dev'
+      parametersFile: 'infra/main.dev.bicepparam'
+    jobs:
+      - deployment: DeployInfra
+        displayName: 'Deploy (dev)'
+        environment: 'dev-br-ifrisk'
+        strategy:
+          runOnce:
+            deploy:
+              steps:
+                - checkout: self
+
+                - task: AzureCLI@2
+                  displayName: 'Deploy Bicep to Azure'
+                  inputs:
+                    azureSubscription: $(azureServiceConnection)
+                    scriptType: 'bash'
+                    scriptLocation: 'inlineScript'
+                    inlineScript: |
+                      az deployment sub create \
+                        --location $(location) \
+                        --template-file $(templateFile) \
+                        --parameters $(parametersFile) \
+                        --name "deploy-$(envName)-$(Build.BuildNumber)"
+
+                - task: AzureCLI@2
+                  displayName: 'Create PAT Token (60 days)'
+                  inputs:
+                    azureSubscription: $(azureServiceConnection)
+                    scriptType: 'bash'
+                    scriptLocation: 'inlineScript'
+                    inlineScript: |
+                      OUTPUTS=$(az deployment sub show \
+                        --name "deploy-$(envName)-$(Build.BuildNumber)" \
+                        --query properties.outputs -o json)
+                      WORKSPACE_URL=$(echo $OUTPUTS | jq -r '.databricksWorkspaceUrl.value')
+                      chmod +x infra/scripts/create-databricks-pat.sh
+                      ./infra/scripts/create-databricks-pat.sh \
+                        "$WORKSPACE_URL" "pipeline-token-$(envName)"
+
+  # ════════════════════════════════════════════════
+  #  TEST
+  # ════════════════════════════════════════════════
+  - stage: Plan_Test
+    displayName: 'Test - What-If'
+    dependsOn: Deploy_Dev
+    jobs:
+      - job: WhatIf
+        displayName: 'Bicep What-If (test)'
+        steps:
+          - task: AzureCLI@2
+            displayName: 'Run Bicep What-If'
+            inputs:
+              azureSubscription: $(azureServiceConnection)
+              scriptType: 'bash'
+              scriptLocation: 'inlineScript'
+              inlineScript: |
+                az deployment sub what-if \
+                  --location $(location) \
+                  --template-file $(templateFile) \
+                  --parameters infra/main.test.bicepparam
+
+  - stage: Deploy_Test
+    displayName: 'Test - Deploy'
+    dependsOn: Plan_Test
+    variables:
+      envName: 'test'
+      parametersFile: 'infra/main.test.bicepparam'
+    jobs:
+      - deployment: DeployInfra
+        displayName: 'Deploy (test)'
+        environment: 'test-br-ifrisk'
+        strategy:
+          runOnce:
+            deploy:
+              steps:
+                - checkout: self
+
+                - task: AzureCLI@2
+                  displayName: 'Deploy Bicep to Azure'
+                  inputs:
+                    azureSubscription: $(azureServiceConnection)
+                    scriptType: 'bash'
+                    scriptLocation: 'inlineScript'
+                    inlineScript: |
+                      az deployment sub create \
+                        --location $(location) \
+                        --template-file $(templateFile) \
+                        --parameters $(parametersFile) \
+                        --name "deploy-$(envName)-$(Build.BuildNumber)"
+
+                - task: AzureCLI@2
+                  displayName: 'Create PAT Token (60 days)'
+                  inputs:
+                    azureSubscription: $(azureServiceConnection)
+                    scriptType: 'bash'
+                    scriptLocation: 'inlineScript'
+                    inlineScript: |
+                      OUTPUTS=$(az deployment sub show \
+                        --name "deploy-$(envName)-$(Build.BuildNumber)" \
+                        --query properties.outputs -o json)
+                      WORKSPACE_URL=$(echo $OUTPUTS | jq -r '.databricksWorkspaceUrl.value')
+                      chmod +x infra/scripts/create-databricks-pat.sh
+                      ./infra/scripts/create-databricks-pat.sh \
+                        "$WORKSPACE_URL" "pipeline-token-$(envName)"
+
+  # ════════════════════════════════════════════════
+  #  PRD
+  # ════════════════════════════════════════════════
+  - stage: Plan_Prd
+    displayName: 'PRD - What-If'
+    dependsOn: Deploy_Test
+    jobs:
+      - job: WhatIf
+        displayName: 'Bicep What-If (prd)'
+        steps:
+          - task: AzureCLI@2
+            displayName: 'Run Bicep What-If'
+            inputs:
+              azureSubscription: $(azureServiceConnection)
+              scriptType: 'bash'
+              scriptLocation: 'inlineScript'
+              inlineScript: |
+                az deployment sub what-if \
+                  --location $(location) \
+                  --template-file $(templateFile) \
+                  --parameters infra/main.prd.bicepparam
+
+  - stage: Deploy_Prd
+    displayName: 'PRD - Deploy'
+    dependsOn: Plan_Prd
+    variables:
+      envName: 'prd'
+      parametersFile: 'infra/main.prd.bicepparam'
+    jobs:
+      - deployment: DeployInfra
+        displayName: 'Deploy (prd)'
+        environment: 'prd-br-ifrisk'
+        strategy:
+          runOnce:
+            deploy:
+              steps:
+                - checkout: self
+
+                - task: AzureCLI@2
+                  displayName: 'Deploy Bicep to Azure'
+                  inputs:
+                    azureSubscription: $(azureServiceConnection)
+                    scriptType: 'bash'
+                    scriptLocation: 'inlineScript'
+                    inlineScript: |
+                      az deployment sub create \
+                        --location $(location) \
+                        --template-file $(templateFile) \
+                        --parameters $(parametersFile) \
+                        --name "deploy-$(envName)-$(Build.BuildNumber)"
+
+                - task: AzureCLI@2
+                  displayName: 'Create PAT Token (60 days)'
+                  inputs:
+                    azureSubscription: $(azureServiceConnection)
+                    scriptType: 'bash'
+                    scriptLocation: 'inlineScript'
+                    inlineScript: |
+                      OUTPUTS=$(az deployment sub show \
+                        --name "deploy-$(envName)-$(Build.BuildNumber)" \
+                        --query properties.outputs -o json)
+                      WORKSPACE_URL=$(echo $OUTPUTS | jq -r '.databricksWorkspaceUrl.value')
+                      chmod +x infra/scripts/create-databricks-pat.sh
+                      ./infra/scripts/create-databricks-pat.sh \
+                        "$WORKSPACE_URL" "pipeline-token-$(envName)"

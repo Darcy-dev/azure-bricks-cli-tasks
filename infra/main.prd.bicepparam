@@ -1,0 +1,12 @@
+using 'main.bicep'
+
+param location = 'brazilsouth'
+param resourceGroupName = 'rg-prd-br-ifrisk'
+param vnetName = 'vn-prd-br-ifrisk'
+param vnetAddressPrefix = '172.24.58.0/23'
+param publicSubnetCidr = '172.24.58.0/25'
+param privateSubnetCidr = '172.24.59.0/25'
+param defaultSubnetName = 'snet-prd-br-ifrisk'
+param defaultSubnetCidr = '172.24.58.128/25'
+param databricksWorkspaceName = 'adb-prd-br-ifrisk'
+param workerIdentityName = 'umi-worker-southbr-prd-0001'

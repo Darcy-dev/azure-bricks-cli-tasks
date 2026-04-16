@@ -1,38 +1,55 @@
-  $DstSub = "f3bee883-599d-42ef-aeb7-d5fe4abeb4ea"
-  $DstRg  = "s00175rg-automation"
-  $DstAa  = "s00175prod"
-  $Api    = "2023-11-01"
+  set -euo pipefail
 
-  # Names of encrypted variables to migrate
-  $EncryptedNames = @(
-      "apiSecret",
-      "connectionString",
-      "anotherSecret"
-  )
+  SRC_SUB="535d8f2e-f08c-4475-8608-3b8136d13cbd"
+  SRC_RG="s00175rgsfd02-1"
+  SRC_AA="s00175autovm"
 
-  Connect-AzAccount -Identity | Out-Null
-  $token = (Get-AzAccessToken -ResourceUrl "https://management.azure.com/").Token
-  $headers = @{ Authorization = "Bearer $token"; "Content-Type" = "application/json" }
+  DST_SUB="f3bee883-599d-42ef-aeb7-d5fe4abeb4ea"
+  DST_RG="s00175rg-automation"
+  DST_AA="s00175prod"
 
-  foreach ($n in $EncryptedNames) {
-      $plain = Get-AutomationVariable -Name $n
-      if ($null -eq $plain) { Write-Warning "Not found: $n"; continue }
+  API="2023-11-01"
+  SRC="https://management.azure.com/subscriptions/$SRC_SUB/resourceGroups/$SRC_RG/providers/Microsoft.Automation/automationAccounts/$SRC_AA/schedules"
+  DST="https://management.azure.com/subscriptions/$DST_SUB/resourceGroups/$DST_RG/providers/Microsoft.Automation/automationAccounts/$DST_AA/schedules"
 
-      $body = @{
-          name       = $n
-          properties = @{
-              value       = ($plain | ConvertTo-Json -Compress)  # JSON-encode
-              isEncrypted = $true
-              description = "Migrated from source AA"
-          }
-      } | ConvertTo-Json -Depth 5 -Compress
+  # ISO-8601 timestamp 10 minutes from now (used when source start is in the past)
+  FUTURE=$(date -u -v+10M +"%Y-%m-%dT%H:%M:%S+00:00" 2>/dev/null || date -u -d "+10 minutes" +"%Y-%m-%dT%H:%M:%S+00:00")
+  NOW=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
 
-      $url = "https://management.azure.com/subscriptions/$DstSub/resourceGroups/$DstRg/providers/Microsoft.Automation/automationAccounts/$DstAa/variables/$n`?api-version=$Api"
+  echo "Fetching schedules..."
+  list=$(az rest --method get --url "$SRC?api-version=$API")
+  echo "$list" | jq -c '.value[]' | while read -r s; do
+    name=$(echo "$s" | jq -r '.name')
+    freq=$(echo "$s" | jq -r '.properties.frequency')
+    start=$(echo "$s" | jq -r '.properties.startTime')
 
-      try {
-          Invoke-RestMethod -Method Put -Uri $url -Headers $headers -Body $body | Out-Null
-          Write-Output "Migrated: $n"
-      } catch {
-          Write-Error "Failed $n : $_"
-      }
-  }
+    # Skip OneTime in the past
+    if [ "$freq" = "OneTime" ] && [[ "$start" < "$NOW" ]]; then
+      echo "SKIP (OneTime past): $name"
+      continue
+    fi
+
+    # Shift past startTimes forward
+    if [[ "$start" < "$NOW" ]]; then
+      start="$FUTURE"
+      echo "  adjusting startTime: $name -> $start"
+    fi
+
+    body=$(echo "$s" | jq --arg start "$start" --arg name "$name" '{
+      name: $name,
+      properties: (
+        .properties
+        | .startTime = $start
+        | with_entries(select(.value != null))
+      )
+    }')
+
+    if az rest --method put \
+         --url "$DST/$name?api-version=$API" \
+         --body "$body" \
+         --headers "Content-Type=application/json" -o none; then
+      echo "Copied: $name"
+    else
+      echo "FAILED: $name"
+    fi
+  done

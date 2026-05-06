@@ -1,86 +1,24 @@
-  param([switch]$WhatIf)
+%pip install azure-storage-blob azure-identity
 
-  $ErrorActionPreference = "Stop"
+from azure.storage.blob import BlobServiceClient
+from azure.identity import ClientSecretCredential
 
-  $SrcSub = "535d8f2e-f08c-4475-8608-3b8136d13cbd"
-  $SrcRg  = "s00175rgsfd02-1"
-  $SrcAa  = "s00175autovm"
+# Using Service Principal (recommended for production)
+credential = ClientSecretCredential(
+    tenant_id=dbutils.secrets.get("scope-name", "tenant-id"),
+    client_id=dbutils.secrets.get("scope-name", "client-id"),
+    client_secret=dbutils.secrets.get("scope-name", "client-secret")
+)
 
-  $DstSub = "f3bee883-599d-42ef-aeb7-d5fe4abeb4ea"
-  $DstRg  = "s00175rg-automation"
-  $DstAa  = "s00175prod"
+storage_account_name = "yourstorageaccount"
+account_url = f"https://{storage_account_name}.blob.core.windows.net"
 
-  $ApiVersion = "2023-11-01"
+blob_service_client = BlobServiceClient(account_url=account_url, credential=credential)
 
-  $srcBase = "https://management.azure.com/subscriptions/$SrcSub/resourceGroups/$SrcRg/providers/Microsoft.Automation/automationAccounts/$SrcAa/schedules"
-  $dstBase = "https://management.azure.com/subscriptions/$DstSub/resourceGroups/$DstRg/providers/Microsoft.Automation/automationAccounts/$DstAa/schedules"
-
-  Write-Host "Fetching schedules from $SrcAa..." -ForegroundColor Cyan
-  $listJson = az rest --method get --url "${srcBase}?api-version=$ApiVersion"
-  if ($LASTEXITCODE -ne 0) { throw "Failed to list schedules." }
-  $list = $listJson | ConvertFrom-Json
-  Write-Host "Found $($list.value.Count) schedules." -ForegroundColor Cyan
-
-  $copied = 0; $skipped = 0; $failed = 0
-  $nowUtc = (Get-Date).ToUniversalTime()
-
-  foreach ($s in $list.value) {
-      $name  = $s.name
-      $p     = $s.properties
-
-      # Skip OneTime schedules that have already fired — Azure rejects them
-      $startUtc = [datetime]::Parse($p.startTime).ToUniversalTime()
-      if ($p.frequency -eq "OneTime" -and $startUtc -lt $nowUtc) {
-          Write-Host "SKIP (OneTime in the past): $name" -ForegroundColor Yellow
-          $skipped++
-          continue
-      }
-
-      # Shift recurring schedule startTime forward if it's in the past (Azure requires >= now+5m)
-      $startTime = $p.startTime
-      if ($startUtc -lt $nowUtc.AddMinutes(5)) {
-          $startTime = $nowUtc.AddMinutes(10).ToString("o")
-          Write-Host "  adjusting startTime (was past): $name -> $startTime" -ForegroundColor DarkYellow
-      }
-
-      $props = @{
-          description = [string]$p.description
-          startTime   = $startTime
-          frequency   = $p.frequency
-          interval    = $p.interval
-          timeZone    = $p.timeZone
-      }
-      if ($p.expiryTime)        { $props.expiryTime       = $p.expiryTime }
-      if ($p.advancedSchedule)  { $props.advancedSchedule = $p.advancedSchedule }
-
-      $body = @{ name = $name; properties = $props } |
-              ConvertTo-Json -Depth 10 -Compress
-
-      if ($WhatIf) {
-          Write-Host "WhatIf: would create $name  freq=$($p.frequency) start=$startTime" -ForegroundColor Magenta
-          continue
-      }
-
-      $tmp = New-TemporaryFile
-      try {
-          Set-Content -Path $tmp.FullName -Value $body -Encoding utf8
-          az rest --method put `
-              --url  "$dstBase/$name`?api-version=$ApiVersion" `
-              --body "@$($tmp.FullName)" `
-              --headers "Content-Type=application/json" `
-              -o none
-
-          if ($LASTEXITCODE -eq 0) {
-              Write-Host "Copied: $name" -ForegroundColor Green
-              $copied++
-          } else {
-              Write-Host "FAILED: $name" -ForegroundColor Red
-              $failed++
-          }
-      } finally {
-          Remove-Item $tmp.FullName -ErrorAction SilentlyContinue
-      }
-  }
-
-  Write-Host ""
-  Write-Host "Summary: copied=$copied  skipped=$skipped  failed=$failed" -ForegroundColor Cyan
+# Create the container
+container_name = "my-new-container"
+try:
+    container_client = blob_service_client.create_container(container_name)
+    print(f"Container '{container_name}' created successfully")
+except Exception as e:
+    print(f"Error: {e}")

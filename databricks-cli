@@ -163,9 +163,9 @@ $md = [System.Collections.Generic.List[string]]::new()
 
 $md.Add("# Automation Account Inventory")
 $md.Add("")
-$md.Add("**Account:** ``$AutomationAccountName``  ")
-$md.Add("**Resource Group:** ``$ResourceGroupName``  ")
-$md.Add("**Subscription:** ``$($account.name)``  ")
+$md.Add('**Account:** `' + $AutomationAccountName + '`  ')
+$md.Add('**Resource Group:** `' + $ResourceGroupName + '`  ')
+$md.Add('**Subscription:** `' + $account.name + '`  ')
 $md.Add("**Generated:** $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss zzz')")
 $md.Add("")
 $md.Add("## Summary")
@@ -173,8 +173,8 @@ $md.Add("")
 $md.Add("- Total runbooks: **$($runbooks.Count)**")
 $md.Add("- Total schedules: **$($schedules.Count)**")
 $md.Add("- Total runbook-schedule links: **$($jobSchedules.Count)**")
-$md.Add("- Runbooks with at least one schedule: **$(($inventory | Where-Object ScheduleCount -gt 0).Count)**")
-$md.Add("- Runbooks with no schedule: **$(($inventory | Where-Object ScheduleCount -eq 0).Count)**")
+$md.Add("- Runbooks with at least one schedule: **$(($inventory | Where-Object { $_.ScheduleCount -gt 0 }).Count)**")
+$md.Add("- Runbooks with no schedule: **$(($inventory | Where-Object { $_.ScheduleCount -eq 0 }).Count)**")
 $md.Add("")
 $md.Add("## Runbooks")
 $md.Add("")
@@ -186,15 +186,15 @@ foreach ($e in ($inventory | Sort-Object RunbookName)) {
         ($e.Schedules | ForEach-Object { "$($_.ScheduleName) ($($_.Summary))" }) -join '; '
     } else { '_none_' }
     $desc = if ($e.Description) { ($e.Description -replace '\|','\\|' -replace '\r?\n',' ') } else { '' }
-    $md.Add("| ``$($e.RunbookName)`` | $($e.RunbookType) | $($e.State) | $schedSummary | $desc |")
+    $md.Add('| `' + $e.RunbookName + '` | ' + $e.RunbookType + ' | ' + $e.State + ' | ' + $schedSummary + ' | ' + $desc + ' |')
 }
 
 $md.Add("")
 $md.Add("## Schedules Detail")
 $md.Add("")
 
-foreach ($e in ($inventory | Where-Object ScheduleCount -gt 0 | Sort-Object RunbookName)) {
-    $md.Add("### ``$($e.RunbookName)``")
+foreach ($e in ($inventory | Where-Object { $_.ScheduleCount -gt 0 } | Sort-Object RunbookName)) {
+    $md.Add('### `' + $e.RunbookName + '`')
     $md.Add("")
     foreach ($s in $e.Schedules) {
         $md.Add("- **$($s.ScheduleName)** - $($s.Summary)")

@@ -1,25 +1,23 @@
 <#
 .SYNOPSIS
-    Copies all runbooks from one Azure Automation Account to another using 'az rest'
-    against the Azure Management REST API directly.
+    Copy all runbooks from one Azure Automation Account to another.
 
 .DESCRIPTION
-    Bypasses the unstable 'az automation' extension and calls the underlying REST API.
-    Works on any az CLI version. Listing runbooks still uses the extension (it's reliable
-    for read ops); content download/upload uses 'az rest' for stability.
+    Acquires an ARM token via 'az account get-access-token' and uses native PowerShell
+    Invoke-RestMethod to talk to Azure Management API directly. Avoids all the
+    'az rest' / 'az automation' command-name and URL-mangling issues on Windows.
 
 .PARAMETER Overwrite
     If specified, existing runbooks in the destination will be deleted and recreated.
 
 .EXAMPLE
-    .\Copy-Runbooks-Rest.ps1
-    .\Copy-Runbooks-Rest.ps1 -Overwrite
+    .\Copy-Runbooks-IRM.ps1
+    .\Copy-Runbooks-IRM.ps1 -Overwrite
 
 .NOTES
-    Requires:
-      - Azure CLI (az --version)
-      - Logged in: az login
-      - Subscription set: az account set --subscription "<id>"
+    Requires only:
+      - Azure CLI installed and logged in (az login)
+      - Subscription context set (az account set --subscription "<id>")
 #>
 
 [CmdletBinding()]
@@ -36,52 +34,69 @@ $ExportPath           = Join-Path $PSScriptRoot 'runbook-export'
 # ------------------------------------------------------------------------------
 
 $ErrorActionPreference = 'Stop'
-$env:AZURE_CORE_ONLY_SHOW_ERRORS = 'true'   # silence experimental/preview warnings
+$env:AZURE_CORE_ONLY_SHOW_ERRORS = 'true'
+
+# ---- Acquire ARM token + subscription via az --------------------------------
+
+try {
+    $tokenJson = & az account get-access-token --resource 'https://management.azure.com/' --output json 2>$null
+    if ($LASTEXITCODE -ne 0) { throw 'Token acquisition failed.' }
+    $token = ($tokenJson | ConvertFrom-Json).accessToken
+}
+catch {
+    Write-Error "Failed to get ARM token. Run 'az login' first."
+    exit 1
+}
+
+try {
+    $accountJson    = & az account show --output json 2>$null
+    $account        = $accountJson | ConvertFrom-Json
+    $subscriptionId = $account.id
+    Write-Host "Logged in as: $($account.user.name)" -ForegroundColor Cyan
+    Write-Host "Subscription: $($account.name) ($subscriptionId)" -ForegroundColor Cyan
+}
+catch {
+    Write-Error "Failed to read az account context."
+    exit 1
+}
+
+$Headers = @{ Authorization = "Bearer $token" }
+$BaseArm = 'https://management.azure.com'
 
 # ---- Helpers -----------------------------------------------------------------
 
-function Invoke-Az {
-    param([Parameter(ValueFromRemainingArguments = $true)][string[]]$Args)
-    $stdout = & az @Args 2>$null
-    if ($LASTEXITCODE -ne 0) {
-        $stderr = & az @Args 2>&1 | Out-String
-        throw "az $($Args -join ' ') failed (exit $LASTEXITCODE):`n$stderr"
-    }
-    return $stdout
-}
-
-function Invoke-AzJson {
-    param([Parameter(ValueFromRemainingArguments = $true)][string[]]$Args)
-    $raw = Invoke-Az @Args
-    if (-not $raw) { return $null }
-    return ($raw | ConvertFrom-Json)
-}
-
-function Get-RunbookUrl {
+function Get-RunbookBaseUrl {
     param(
-        [string]$SubscriptionId,
-        [string]$ResourceGroup,
         [string]$AutomationAccount,
         [string]$RunbookName,
-        [string]$SubResource = ''   # '', '/draft/content', '/content', '/publish', '/draft'
+        [string]$SubResource = ''
     )
-    # Returns base URL only; api-version is passed via --uri-parameters to avoid
-    # PowerShell/Windows mangling of '?' in URLs to az rest.
-    return "https://management.azure.com/subscriptions/$SubscriptionId/resourceGroups/$ResourceGroup/providers/Microsoft.Automation/automationAccounts/$AutomationAccount/runbooks/$RunbookName$SubResource"
+    return "$BaseArm/subscriptions/$subscriptionId/resourceGroups/$ResourceGroupName/providers/Microsoft.Automation/automationAccounts/$AutomationAccount/runbooks/$RunbookName$SubResource" + "?api-version=$ApiVersion"
 }
 
-function Get-ContentTypeForRunbook {
-    param([string]$RunbookType)
-    switch ($RunbookType) {
-        'PowerShell'              { return 'text/powershell' }
-        'PowerShell72'            { return 'text/powershell' }
-        'PowerShellWorkflow'      { return 'text/powershell' }
-        'Python2'                 { return 'text/python' }
-        'Python3'                 { return 'text/python' }
-        'GraphPowerShell'         { return 'application/json' }
-        'GraphPowerShellWorkflow' { return 'application/json' }
-        default                   { return 'text/plain' }
+function Invoke-Arm {
+    param(
+        [string]$Method,
+        [string]$Url,
+        [object]$Body = $null,
+        [string]$ContentType = 'application/json',
+        [switch]$Raw     # return response body as raw string (for runbook content)
+    )
+    $params = @{
+        Method  = $Method
+        Uri     = $Url
+        Headers = $Headers
     }
+    if ($Body) {
+        $params.Body        = $Body
+        $params.ContentType = $ContentType
+    }
+    if ($Raw) {
+        # Use Invoke-WebRequest to get raw content
+        $resp = Invoke-WebRequest @params -UseBasicParsing
+        return $resp.Content
+    }
+    return Invoke-RestMethod @params
 }
 
 function Get-FileExtensionForRunbook {
@@ -98,37 +113,30 @@ function Get-FileExtensionForRunbook {
     }
 }
 
-# ---- Pre-flight checks -------------------------------------------------------
-
-try {
-    $null = & az --version 2>&1
-    if ($LASTEXITCODE -ne 0) { throw 'az CLI not found in PATH.' }
-}
-catch {
-    Write-Error "Azure CLI not installed. https://aka.ms/installazurecli"
-    exit 1
-}
-
-try {
-    $account = Invoke-AzJson account show
-    Write-Host "Logged in as: $($account.user.name)" -ForegroundColor Cyan
-    Write-Host "Subscription: $($account.name) ($($account.id))" -ForegroundColor Cyan
-    $subscriptionId = $account.id
-}
-catch {
-    Write-Error "Not logged in. Run: az login"
-    exit 1
+function Get-ContentTypeForRunbook {
+    param([string]$RunbookType)
+    switch ($RunbookType) {
+        'PowerShell'              { 'text/powershell' }
+        'PowerShell72'            { 'text/powershell' }
+        'PowerShellWorkflow'      { 'text/powershell' }
+        'Python2'                 { 'text/python' }
+        'Python3'                 { 'text/python' }
+        'GraphPowerShell'         { 'application/json' }
+        'GraphPowerShellWorkflow' { 'application/json' }
+        default                   { 'text/plain' }
+    }
 }
 
-# Validate Automation Accounts exist (via REST so we don't depend on the extension)
+# ---- Validate AAs ------------------------------------------------------------
+
 Write-Host "`nValidating Automation Accounts..." -ForegroundColor Cyan
 
-$srcAaUrl  = "https://management.azure.com/subscriptions/$subscriptionId/resourceGroups/$ResourceGroupName/providers/Microsoft.Automation/automationAccounts/$SourceAutomationName"
-$destAaUrl = "https://management.azure.com/subscriptions/$subscriptionId/resourceGroups/$ResourceGroupName/providers/Microsoft.Automation/automationAccounts/$DestAutomationName"
+$srcAaUrl  = "$BaseArm/subscriptions/$subscriptionId/resourceGroups/$ResourceGroupName/providers/Microsoft.Automation/automationAccounts/$SourceAutomationName" + "?api-version=$ApiVersion"
+$destAaUrl = "$BaseArm/subscriptions/$subscriptionId/resourceGroups/$ResourceGroupName/providers/Microsoft.Automation/automationAccounts/$DestAutomationName" + "?api-version=$ApiVersion"
 
 try {
-    $srcAA  = Invoke-AzJson rest --method get --url $srcAaUrl  --uri-parameters "api-version=$ApiVersion"
-    $destAA = Invoke-AzJson rest --method get --url $destAaUrl --uri-parameters "api-version=$ApiVersion"
+    $srcAA  = Invoke-Arm -Method GET -Url $srcAaUrl
+    $destAA = Invoke-Arm -Method GET -Url $destAaUrl
     Write-Host "  [OK] Source:      $($srcAA.name) ($($srcAA.location))"
     Write-Host "  [OK] Destination: $($destAA.name) ($($destAA.location))"
     $destLocation = $destAA.location
@@ -138,19 +146,20 @@ catch {
     exit 1
 }
 
-# Prep export directory
+# ---- Prep export dir ---------------------------------------------------------
+
 if (Test-Path $ExportPath) { Remove-Item $ExportPath -Recurse -Force }
 New-Item -ItemType Directory -Path $ExportPath -Force | Out-Null
 
-# ---- List runbooks (via REST) ------------------------------------------------
+# ---- List runbooks -----------------------------------------------------------
 
 Write-Host "`nFetching runbooks from '$SourceAutomationName'..." -ForegroundColor Cyan
 
-$listSrcUrl  = "https://management.azure.com/subscriptions/$subscriptionId/resourceGroups/$ResourceGroupName/providers/Microsoft.Automation/automationAccounts/$SourceAutomationName/runbooks"
-$listDestUrl = "https://management.azure.com/subscriptions/$subscriptionId/resourceGroups/$ResourceGroupName/providers/Microsoft.Automation/automationAccounts/$DestAutomationName/runbooks"
+$listSrcUrl  = "$BaseArm/subscriptions/$subscriptionId/resourceGroups/$ResourceGroupName/providers/Microsoft.Automation/automationAccounts/$SourceAutomationName/runbooks" + "?api-version=$ApiVersion"
+$listDestUrl = "$BaseArm/subscriptions/$subscriptionId/resourceGroups/$ResourceGroupName/providers/Microsoft.Automation/automationAccounts/$DestAutomationName/runbooks" + "?api-version=$ApiVersion"
 
-$srcList  = Invoke-AzJson rest --method get --url $listSrcUrl  --uri-parameters "api-version=$ApiVersion"
-$destList = Invoke-AzJson rest --method get --url $listDestUrl --uri-parameters "api-version=$ApiVersion"
+$srcList  = Invoke-Arm -Method GET -Url $listSrcUrl
+$destList = Invoke-Arm -Method GET -Url $listDestUrl
 
 $runbooks = $srcList.value
 if (-not $runbooks -or $runbooks.Count -eq 0) {
@@ -166,8 +175,8 @@ $destNames = @($destList.value | Select-Object -ExpandProperty name)
 $results = [System.Collections.Generic.List[pscustomobject]]::new()
 
 foreach ($rb in $runbooks) {
-    $name = $rb.name
-    $type = $rb.properties.runbookType
+    $name        = $rb.name
+    $type        = $rb.properties.runbookType
     $description = if ($rb.properties.description) { $rb.properties.description } else { '' }
     $logVerbose  = [bool]$rb.properties.logVerbose
     $logProgress = [bool]$rb.properties.logProgress
@@ -185,31 +194,23 @@ foreach ($rb in $runbooks) {
     $contentFile = Join-Path $ExportPath "$name.$extension"
 
     try {
-        # 1. Download published content from source via REST
+        # 1. Download published content from source
         Write-Host '  -> Downloading content from source...'
-        $contentUrl = Get-RunbookUrl -SubscriptionId $subscriptionId `
-            -ResourceGroup $ResourceGroupName -AutomationAccount $SourceAutomationName `
-            -RunbookName $name -SubResource '/content'
-
-        # az rest writes raw body to stdout for non-JSON responses
-        $content = Invoke-Az rest --method get --url $contentUrl --uri-parameters "api-version=$ApiVersion" --output tsv
-        if (-not $content) { throw "Empty content returned for runbook '$name'." }
-        $content | Out-File -FilePath $contentFile -Encoding utf8 -NoNewline
+        $contentUrl = Get-RunbookBaseUrl -AutomationAccount $SourceAutomationName -RunbookName $name -SubResource '/content'
+        $content = Invoke-Arm -Method GET -Url $contentUrl -Raw
+        if (-not $content) { throw "Empty content returned." }
+        [System.IO.File]::WriteAllText($contentFile, $content, [System.Text.Encoding]::UTF8)
 
         # 2. Delete existing destination runbook if overwriting
         if ($destNames -contains $name -and $Overwrite) {
             Write-Host '  -> Deleting existing destination runbook...'
-            $deleteUrl = Get-RunbookUrl -SubscriptionId $subscriptionId `
-                -ResourceGroup $ResourceGroupName -AutomationAccount $DestAutomationName `
-                -RunbookName $name
-            Invoke-Az rest --method delete --url $deleteUrl --uri-parameters "api-version=$ApiVersion" | Out-Null
+            $deleteUrl = Get-RunbookBaseUrl -AutomationAccount $DestAutomationName -RunbookName $name
+            Invoke-Arm -Method DELETE -Url $deleteUrl | Out-Null
         }
 
-        # 3. Create the runbook resource in destination (PUT to runbook URL)
+        # 3. Create the runbook resource in destination
         Write-Host '  -> Creating runbook in destination...'
-        $createUrl = Get-RunbookUrl -SubscriptionId $subscriptionId `
-            -ResourceGroup $ResourceGroupName -AutomationAccount $DestAutomationName `
-            -RunbookName $name
+        $createUrl = Get-RunbookBaseUrl -AutomationAccount $DestAutomationName -RunbookName $name
 
         $createBody = @{
             location   = $destLocation
@@ -222,41 +223,30 @@ foreach ($rb in $runbooks) {
             }
         } | ConvertTo-Json -Depth 5 -Compress
 
-        # Write body to temp file (az rest --body @file is more reliable than inline)
-        $bodyFile = New-TemporaryFile
-        $createBody | Out-File -FilePath $bodyFile -Encoding utf8 -NoNewline
-        try {
-            Invoke-Az rest --method put --url $createUrl --uri-parameters "api-version=$ApiVersion" --body "@$bodyFile" `
-                --headers 'Content-Type=application/json' | Out-Null
-        }
-        finally {
-            Remove-Item $bodyFile -Force -ErrorAction SilentlyContinue
-        }
+        Invoke-Arm -Method PUT -Url $createUrl -Body $createBody -ContentType 'application/json' | Out-Null
 
         # 4. Upload draft content
         Write-Host '  -> Uploading content...'
-        $draftContentUrl = Get-RunbookUrl -SubscriptionId $subscriptionId `
-            -ResourceGroup $ResourceGroupName -AutomationAccount $DestAutomationName `
-            -RunbookName $name -SubResource '/draft/content'
-
-        Invoke-Az rest --method put --url $draftContentUrl --uri-parameters "api-version=$ApiVersion" `
-            --body "@$contentFile" `
-            --headers "Content-Type=$contentType" | Out-Null
+        $draftContentUrl = Get-RunbookBaseUrl -AutomationAccount $DestAutomationName -RunbookName $name -SubResource '/draft/content'
+        $rawContent = [System.IO.File]::ReadAllText($contentFile, [System.Text.Encoding]::UTF8)
+        Invoke-Arm -Method PUT -Url $draftContentUrl -Body $rawContent -ContentType $contentType | Out-Null
 
         # 5. Publish draft
         Write-Host '  -> Publishing...'
-        $publishUrl = Get-RunbookUrl -SubscriptionId $subscriptionId `
-            -ResourceGroup $ResourceGroupName -AutomationAccount $DestAutomationName `
-            -RunbookName $name -SubResource '/publish'
-
-        Invoke-Az rest --method post --url $publishUrl --uri-parameters "api-version=$ApiVersion" | Out-Null
+        $publishUrl = Get-RunbookBaseUrl -AutomationAccount $DestAutomationName -RunbookName $name -SubResource '/publish'
+        Invoke-Arm -Method POST -Url $publishUrl | Out-Null
 
         Write-Host '  -> DONE' -ForegroundColor Green
         $results.Add([pscustomobject]@{ Name = $name; Type = $type; Status = 'Copied' })
     }
     catch {
-        Write-Host "  -> FAILED: $_" -ForegroundColor Red
-        $results.Add([pscustomobject]@{ Name = $name; Type = $type; Status = "Failed: $($_.Exception.Message)" })
+        $errMsg = $_.Exception.Message
+        # Try to extract Azure error detail
+        if ($_.ErrorDetails -and $_.ErrorDetails.Message) {
+            $errMsg = $_.ErrorDetails.Message
+        }
+        Write-Host "  -> FAILED: $errMsg" -ForegroundColor Red
+        $results.Add([pscustomobject]@{ Name = $name; Type = $type; Status = "Failed: $errMsg" })
     }
 }
 

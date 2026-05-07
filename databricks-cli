@@ -1,34 +1,205 @@
-import requests
+<#
+.SYNOPSIS
+    Copies all runbooks from one Azure Automation Account to another within the same resource group.
 
-tenant_id = dbutils.secrets.get("scope-name", "tenant-id")
-client_id = dbutils.secrets.get("scope-name", "client-id")
-client_secret = dbutils.secrets.get("scope-name", "client-secret")
-storage_account = "yourstorageaccount"
-container = "my-new-container"
+.DESCRIPTION
+    Exports each runbook from the source Automation Account, recreates it in the destination
+    Automation Account, uploads the content, and publishes it. Skips runbooks that already
+    exist in the destination unless -Overwrite is specified.
 
-# Step 1: get token
-token_resp = requests.post(
-    f"https://login.microsoftonline.com/{tenant_id}/oauth2/v2.0/token",
-    data={
-        "grant_type": "client_credentials",
-        "client_id": client_id,
-        "client_secret": client_secret,
-        "scope": "https://storage.azure.com/.default",
-    },
+.PARAMETER Overwrite
+    If specified, existing runbooks in the destination will be overwritten.
+
+.PARAMETER WhatIf
+    Shows what would be copied without making any changes.
+
+.EXAMPLE
+    .\Copy-Runbooks.ps1
+    .\Copy-Runbooks.ps1 -Overwrite
+    .\Copy-Runbooks.ps1 -WhatIf
+
+.NOTES
+    Requires: Az.Accounts, Az.Automation modules
+    Install:  Install-Module -Name Az.Automation -Scope CurrentUser
+#>
+
+[CmdletBinding(SupportsShouldProcess = $true)]
+param(
+    [switch]$Overwrite
 )
-token_resp.raise_for_status()
-token = token_resp.json()["access_token"]
 
-# Step 2: create container (Blob endpoint)
-from email.utils import formatdate
-create_resp = requests.put(
-    f"https://{storage_account}.blob.core.windows.net/{container}?restype=container",
-    headers={
-        "Authorization": f"Bearer {token}",
-        "x-ms-version": "2021-12-02",
-        "x-ms-date": formatdate(usegmt=True),
-        "Content-Length": "0",
-    },
-)
-print(create_resp.status_code, create_resp.text)
-# 201 = created, 409 = already exists
+# ---- Configuration -----------------------------------------------------------
+$ResourceGroupName    = 's00175rg-automation'
+$SourceAutomationName = 's00175prod-aa'
+$DestAutomationName   = 's00175prod'
+$ExportPath           = Join-Path $PSScriptRoot 'runbook-export'
+# ------------------------------------------------------------------------------
+
+# Ensure required modules are loaded
+$requiredModules = @('Az.Accounts', 'Az.Automation')
+foreach ($mod in $requiredModules) {
+    if (-not (Get-Module -ListAvailable -Name $mod)) {
+        Write-Error "Required module '$mod' is not installed. Run: Install-Module -Name $mod -Scope CurrentUser"
+        exit 1
+    }
+    Import-Module $mod -ErrorAction Stop
+}
+
+# Verify Azure connection
+try {
+    $ctx = Get-AzContext -ErrorAction Stop
+    if (-not $ctx.Account) { throw 'No active Azure context.' }
+    Write-Host "Connected as: $($ctx.Account.Id) | Subscription: $($ctx.Subscription.Name)" -ForegroundColor Cyan
+}
+catch {
+    Write-Error "Not connected to Azure. Run 'Connect-AzAccount' first."
+    exit 1
+}
+
+# Validate both Automation Accounts exist
+Write-Host "`nValidating Automation Accounts..." -ForegroundColor Cyan
+try {
+    $srcAA  = Get-AzAutomationAccount -ResourceGroupName $ResourceGroupName -Name $SourceAutomationName -ErrorAction Stop
+    $destAA = Get-AzAutomationAccount -ResourceGroupName $ResourceGroupName -Name $DestAutomationName   -ErrorAction Stop
+    Write-Host "  [OK] Source:      $($srcAA.AutomationAccountName) ($($srcAA.Location))"
+    Write-Host "  [OK] Destination: $($destAA.AutomationAccountName) ($($destAA.Location))"
+}
+catch {
+    Write-Error "Failed to access Automation Accounts: $_"
+    exit 1
+}
+
+# Prepare export directory
+if (Test-Path $ExportPath) {
+    Remove-Item $ExportPath -Recurse -Force
+}
+New-Item -ItemType Directory -Path $ExportPath -Force | Out-Null
+
+# Get source runbooks
+Write-Host "`nFetching runbooks from '$SourceAutomationName'..." -ForegroundColor Cyan
+$runbooks = Get-AzAutomationRunbook -ResourceGroupName $ResourceGroupName -AutomationAccountName $SourceAutomationName
+
+if (-not $runbooks) {
+    Write-Warning 'No runbooks found in source. Nothing to copy.'
+    exit 0
+}
+
+Write-Host "Found $($runbooks.Count) runbook(s) to process.`n" -ForegroundColor Cyan
+
+# Get destination runbooks for existence check
+$destRunbooks = Get-AzAutomationRunbook -ResourceGroupName $ResourceGroupName -AutomationAccountName $DestAutomationName -ErrorAction SilentlyContinue
+$destNames    = @($destRunbooks | Select-Object -ExpandProperty Name)
+
+# Track results
+$results = [System.Collections.Generic.List[pscustomobject]]::new()
+
+foreach ($rb in $runbooks) {
+    $name = $rb.Name
+    $type = $rb.RunbookType
+    Write-Host "[$name] type=$type" -ForegroundColor Yellow
+
+    # Skip if exists and not overwriting
+    if ($destNames -contains $name -and -not $Overwrite) {
+        Write-Host '  -> SKIP (already exists in destination; use -Overwrite to replace)' -ForegroundColor DarkYellow
+        $results.Add([pscustomobject]@{ Name = $name; Type = $type; Status = 'Skipped' })
+        continue
+    }
+
+    # Map runbook type to file extension
+    $extension = switch ($type) {
+        'PowerShell'                  { 'ps1' }
+        'PowerShell72'                { 'ps1' }
+        'PowerShellWorkflow'          { 'ps1' }
+        'Python2'                     { 'py' }
+        'Python3'                     { 'py' }
+        'GraphPowerShell'             { 'graphrunbook' }
+        'GraphPowerShellWorkflow'     { 'graphrunbook' }
+        default                       { 'txt' }
+    }
+
+    if ($PSCmdlet.ShouldProcess($name, "Copy runbook ($type) to $DestAutomationName")) {
+        try {
+            # 1. Export from source
+            Write-Host '  -> Exporting from source...'
+            $exportedFile = Export-AzAutomationRunbook `
+                -ResourceGroupName     $ResourceGroupName `
+                -AutomationAccountName $SourceAutomationName `
+                -Name                  $name `
+                -OutputFolder          $ExportPath `
+                -Slot                  'Published' `
+                -Force `
+                -ErrorAction Stop
+
+            $filePath = if ($exportedFile -is [System.IO.FileInfo]) { $exportedFile.FullName } else { Join-Path $ExportPath "$name.$extension" }
+
+            if (-not (Test-Path $filePath)) {
+                throw "Exported file not found at expected path: $filePath"
+            }
+
+            # 2. Remove existing destination runbook if overwriting
+            if ($destNames -contains $name -and $Overwrite) {
+                Write-Host '  -> Removing existing destination runbook...'
+                Remove-AzAutomationRunbook `
+                    -ResourceGroupName     $ResourceGroupName `
+                    -AutomationAccountName $DestAutomationName `
+                    -Name                  $name `
+                    -Force `
+                    -ErrorAction Stop
+            }
+
+            # 3. Import into destination as draft
+            Write-Host '  -> Importing into destination...'
+            Import-AzAutomationRunbook `
+                -ResourceGroupName     $ResourceGroupName `
+                -AutomationAccountName $DestAutomationName `
+                -Name                  $name `
+                -Path                  $filePath `
+                -Type                  $type `
+                -Description           $rb.Description `
+                -LogVerbose            $rb.LogVerbose `
+                -LogProgress           $rb.LogProgress `
+                -Force `
+                -ErrorAction Stop | Out-Null
+
+            # 4. Publish
+            Write-Host '  -> Publishing...'
+            Publish-AzAutomationRunbook `
+                -ResourceGroupName     $ResourceGroupName `
+                -AutomationAccountName $DestAutomationName `
+                -Name                  $name `
+                -ErrorAction Stop | Out-Null
+
+            # 5. Copy tags (if any)
+            if ($rb.Tags -and $rb.Tags.Count -gt 0) {
+                Set-AzAutomationRunbook `
+                    -ResourceGroupName     $ResourceGroupName `
+                    -AutomationAccountName $DestAutomationName `
+                    -Name                  $name `
+                    -Tags                  $rb.Tags `
+                    -ErrorAction SilentlyContinue | Out-Null
+            }
+
+            Write-Host '  -> DONE' -ForegroundColor Green
+            $results.Add([pscustomobject]@{ Name = $name; Type = $type; Status = 'Copied' })
+        }
+        catch {
+            Write-Host "  -> FAILED: $_" -ForegroundColor Red
+            $results.Add([pscustomobject]@{ Name = $name; Type = $type; Status = "Failed: $($_.Exception.Message)" })
+        }
+    }
+}
+
+# Summary
+Write-Host "`n=== Summary ===" -ForegroundColor Cyan
+$results | Format-Table -AutoSize
+
+$copied  = ($results | Where-Object Status -eq 'Copied').Count
+$skipped = ($results | Where-Object Status -eq 'Skipped').Count
+$failed  = ($results | Where-Object { $_.Status -like 'Failed*' }).Count
+
+Write-Host "Copied:  $copied"  -ForegroundColor Green
+Write-Host "Skipped: $skipped" -ForegroundColor DarkYellow
+Write-Host "Failed:  $failed"  -ForegroundColor $(if ($failed) { 'Red' } else { 'Gray' })
+Write-Host "`nExported runbook files preserved in: $ExportPath"
+
+if ($failed -gt 0) { exit 1 }

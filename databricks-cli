@@ -1,215 +1,108 @@
 <#
 .SYNOPSIS
-    Extracts all runbooks and their linked schedules from an Azure Automation Account
-    and writes a single Markdown file (inventory.md) for feeding to an LLM that will
-    produce Confluence documentation.
+    Generates Terraform import blocks for all resources inside an Azure Automation Account.
+
+.DESCRIPTION
+    Inspects the AA via ARM REST and emits a single 'imports.tf' file containing 
+    'import' blocks (Terraform 1.5+ syntax). Use 'terraform plan -generate-config-out=generated.tf'
+    afterward to materialize the resource configurations.
 
 .EXAMPLE
-    .\Get-RunbookInventory.ps1
-
-.NOTES
-    Requires:
-      - Azure CLI installed and logged in (az login)
-      - Subscription context set (az account set --subscription "<id>")
+    .\Generate-TerraformImports.ps1
 #>
 
 [CmdletBinding()]
 param(
     [string]$AutomationAccountName = 's00175prod',
-    [string]$ResourceGroupName     = 's00175rg-automation'
+    [string]$ResourceGroupName     = 's00175rg-automation',
+    [string]$OutputFile            = (Join-Path $PSScriptRoot 'imports.tf')
 )
 
-# ---- Configuration -----------------------------------------------------------
 $ApiVersion = '2022-08-08'
-$OutputFile = Join-Path $PSScriptRoot 'inventory.md'
-# ------------------------------------------------------------------------------
-
 $ErrorActionPreference = 'Stop'
 $env:AZURE_CORE_ONLY_SHOW_ERRORS = 'true'
 
-# ---- Acquire token -----------------------------------------------------------
-
-try {
-    $tokenJson = & az account get-access-token --resource 'https://management.azure.com/' --output json 2>$null
-    if ($LASTEXITCODE -ne 0) { throw 'Token acquisition failed.' }
-    $token = ($tokenJson | ConvertFrom-Json).accessToken
-}
-catch {
-    Write-Error "Failed to get ARM token. Run 'az login' first."
-    exit 1
-}
-
-try {
-    $accountJson    = & az account show --output json 2>$null
-    $account        = $accountJson | ConvertFrom-Json
-    $subscriptionId = $account.id
-    Write-Host "Subscription: $($account.name) ($subscriptionId)" -ForegroundColor Cyan
-    Write-Host "Automation Account: $AutomationAccountName / RG: $ResourceGroupName`n" -ForegroundColor Cyan
-}
-catch {
-    Write-Error "Failed to read az account context."
-    exit 1
-}
+# Get token + subscription
+$token   = (& az account get-access-token --resource 'https://management.azure.com/' --output json | ConvertFrom-Json).accessToken
+$account = (& az account show --output json | ConvertFrom-Json)
+$subId   = $account.id
 
 $Headers = @{ Authorization = "Bearer $token" }
 $BaseArm = 'https://management.azure.com'
-$AaPath  = "subscriptions/$subscriptionId/resourceGroups/$ResourceGroupName/providers/Microsoft.Automation/automationAccounts/$AutomationAccountName"
+$AaPath  = "subscriptions/$subId/resourceGroups/$ResourceGroupName/providers/Microsoft.Automation/automationAccounts/$AutomationAccountName"
 
-# ---- Helpers -----------------------------------------------------------------
-
-function Invoke-Arm {
-    param([string]$Method, [string]$Url)
+function Get-Items($subResource) {
     try {
-        return Invoke-RestMethod -Method $Method -Uri $Url -Headers $Headers
+        return (Invoke-RestMethod -Method GET -Headers $Headers -Uri "$BaseArm/$AaPath/$subResource`?api-version=$ApiVersion").value
     }
     catch {
-        $msg = $_.Exception.Message
-        if ($_.ErrorDetails -and $_.ErrorDetails.Message) { $msg = $_.ErrorDetails.Message }
-        throw "ARM call failed [$Method $Url]: $msg"
+        Write-Warning "Failed fetching $subResource : $($_.Exception.Message)"
+        return @()
     }
 }
 
-function Format-Schedule {
-    param($Schedule)
-    if (-not $Schedule) { return $null }
-    $p = $Schedule.properties
-    [pscustomobject]@{
-        Name             = $Schedule.name
-        Description      = $p.description
-        Frequency        = $p.frequency
-        Interval         = $p.interval
-        StartTime        = $p.startTime
-        TimeZone         = $p.timeZone
-        IsEnabled        = $p.isEnabled
-        NextRun          = $p.nextRun
-        AdvancedSchedule = $p.advancedSchedule
-    }
+# Sanitize names for use as Terraform resource labels (must be valid identifiers)
+function ConvertTo-TfLabel($name) {
+    $clean = $name -replace '[^a-zA-Z0-9_]', '_'
+    if ($clean -match '^\d') { $clean = "_$clean" }
+    return $clean.ToLower()
 }
 
-function Get-FrequencyDescription {
-    param($Schedule)
-    if (-not $Schedule) { return '(no schedule)' }
-    $freq = $Schedule.Frequency
-    $intv = $Schedule.Interval
-    $desc = switch ($freq) {
-        'OneTime' { 'Runs once' }
-        'Hour'    { if ($intv -eq 1) { 'Every hour' }   else { "Every $intv hours" } }
-        'Day'     { if ($intv -eq 1) { 'Every day' }    else { "Every $intv days" } }
-        'Week'    { if ($intv -eq 1) { 'Every week' }   else { "Every $intv weeks" } }
-        'Month'   { if ($intv -eq 1) { 'Every month' }  else { "Every $intv months" } }
-        default   { "$freq / interval $intv" }
-    }
-    if (-not $Schedule.IsEnabled) { $desc += ' (DISABLED)' }
-    return $desc
+$out = [System.Collections.Generic.List[string]]::new()
+$out.Add('# Generated Terraform import blocks. Run: terraform plan -generate-config-out=generated.tf')
+$out.Add("# Source: $AutomationAccountName ($ResourceGroupName)")
+$out.Add('')
+
+# Automation Account itself
+$out.Add('import {')
+$out.Add("  to = azurerm_automation_account.$(ConvertTo-TfLabel $AutomationAccountName)")
+$out.Add("  id = `"/subscriptions/$subId/resourceGroups/$ResourceGroupName/providers/Microsoft.Automation/automationAccounts/$AutomationAccountName`"")
+$out.Add('}')
+$out.Add('')
+
+$resourceMap = [ordered]@{
+    'runbooks'                   = 'azurerm_automation_runbook'
+    'schedules'                  = 'azurerm_automation_schedule'
+    'jobSchedules'               = 'azurerm_automation_job_schedule'
+    'variables'                  = 'azurerm_automation_variable_string'
+    'credentials'                = 'azurerm_automation_credential'
+    'connections'                = 'azurerm_automation_connection'
+    'certificates'               = 'azurerm_automation_certificate'
+    'modules'                    = 'azurerm_automation_module'
+    'webhooks'                   = 'azurerm_automation_webhook'
+    'hybridRunbookWorkerGroups'  = 'azurerm_automation_hybrid_runbook_worker_group'
 }
 
-# ---- Fetch data --------------------------------------------------------------
+foreach ($subResource in $resourceMap.Keys) {
+    $tfType = $resourceMap[$subResource]
+    Write-Host "Fetching $subResource..." -ForegroundColor Cyan
+    $items = Get-Items $subResource
 
-$qs = "?api-version=$ApiVersion"
-
-Write-Host 'Fetching runbooks...' -ForegroundColor Cyan
-$runbooks = (Invoke-Arm -Method GET -Url "$BaseArm/$AaPath/runbooks$qs").value
-Write-Host "  Found $($runbooks.Count) runbook(s)."
-
-Write-Host 'Fetching schedules...' -ForegroundColor Cyan
-$schedules = (Invoke-Arm -Method GET -Url "$BaseArm/$AaPath/schedules$qs").value
-Write-Host "  Found $($schedules.Count) schedule(s)."
-
-Write-Host 'Fetching job schedules...' -ForegroundColor Cyan
-$jobSchedules = (Invoke-Arm -Method GET -Url "$BaseArm/$AaPath/jobSchedules$qs").value
-Write-Host "  Found $($jobSchedules.Count) link(s).`n"
-
-$scheduleByName = @{}
-foreach ($s in $schedules) { $scheduleByName[$s.name] = (Format-Schedule -Schedule $s) }
-
-# ---- Build inventory ---------------------------------------------------------
-
-$inventory = [System.Collections.Generic.List[pscustomobject]]::new()
-
-foreach ($rb in $runbooks) {
-    $linked          = $jobSchedules | Where-Object { $_.properties.runbook.name -eq $rb.name }
-    $linkedSchedules = @()
-
-    foreach ($js in $linked) {
-        $sched = $scheduleByName[$js.properties.schedule.name]
-        if ($sched) {
-            $linkedSchedules += [pscustomobject]@{
-                ScheduleName = $sched.Name
-                Description  = $sched.Description
-                Summary      = (Get-FrequencyDescription -Schedule $sched)
-                StartTime    = $sched.StartTime
-                TimeZone     = $sched.TimeZone
-                IsEnabled    = $sched.IsEnabled
-                NextRun      = $sched.NextRun
-                Parameters   = $js.properties.parameters
-                RunOn        = $js.properties.runOn
-            }
-        }
+    if (-not $items -or $items.Count -eq 0) {
+        $out.Add("# (no $subResource found)")
+        $out.Add('')
+        continue
     }
 
-    $inventory.Add([pscustomobject]@{
-        RunbookName   = $rb.name
-        RunbookType   = $rb.properties.runbookType
-        State         = $rb.properties.state
-        Description   = $rb.properties.description
-        Schedules     = $linkedSchedules
-        ScheduleCount = $linkedSchedules.Count
-    })
-}
+    $out.Add("# === $subResource ($($items.Count)) ===")
+    foreach ($item in $items) {
+        $name  = $item.name
+        $label = ConvertTo-TfLabel $name
+        $id    = "/subscriptions/$subId/resourceGroups/$ResourceGroupName/providers/Microsoft.Automation/automationAccounts/$AutomationAccountName/$subResource/$name"
 
-# ---- Build markdown ----------------------------------------------------------
-
-$md = [System.Collections.Generic.List[string]]::new()
-
-$md.Add("# Automation Account Inventory")
-$md.Add("")
-$md.Add('**Account:** `' + $AutomationAccountName + '`  ')
-$md.Add('**Resource Group:** `' + $ResourceGroupName + '`  ')
-$md.Add('**Subscription:** `' + $account.name + '`  ')
-$md.Add("**Generated:** $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss zzz')")
-$md.Add("")
-$md.Add("## Summary")
-$md.Add("")
-$md.Add("- Total runbooks: **$($runbooks.Count)**")
-$md.Add("- Total schedules: **$($schedules.Count)**")
-$md.Add("- Total runbook-schedule links: **$($jobSchedules.Count)**")
-$md.Add("- Runbooks with at least one schedule: **$(($inventory | Where-Object { $_.ScheduleCount -gt 0 }).Count)**")
-$md.Add("- Runbooks with no schedule: **$(($inventory | Where-Object { $_.ScheduleCount -eq 0 }).Count)**")
-$md.Add("")
-$md.Add("## Runbooks")
-$md.Add("")
-$md.Add("| Runbook | Type | State | Schedules | Description |")
-$md.Add("|---------|------|-------|-----------|-------------|")
-
-foreach ($e in ($inventory | Sort-Object RunbookName)) {
-    $schedSummary = if ($e.Schedules.Count -gt 0) {
-        ($e.Schedules | ForEach-Object { "$($_.ScheduleName) ($($_.Summary))" }) -join '; '
-    } else { '_none_' }
-    $desc = if ($e.Description) { ($e.Description -replace '\|','\\|' -replace '\r?\n',' ') } else { '' }
-    $md.Add('| `' + $e.RunbookName + '` | ' + $e.RunbookType + ' | ' + $e.State + ' | ' + $schedSummary + ' | ' + $desc + ' |')
-}
-
-$md.Add("")
-$md.Add("## Schedules Detail")
-$md.Add("")
-
-foreach ($e in ($inventory | Where-Object { $_.ScheduleCount -gt 0 } | Sort-Object RunbookName)) {
-    $md.Add('### `' + $e.RunbookName + '`')
-    $md.Add("")
-    foreach ($s in $e.Schedules) {
-        $md.Add("- **$($s.ScheduleName)** - $($s.Summary)")
-        if ($s.StartTime)   { $md.Add("  - Start: $($s.StartTime) ($($s.TimeZone))") }
-        if ($s.NextRun)     { $md.Add("  - Next run: $($s.NextRun)") }
-        if ($s.Description) { $md.Add("  - Description: $($s.Description)") }
-        if ($s.Parameters -and $s.Parameters.PSObject.Properties.Count -gt 0) {
-            $paramStr = ($s.Parameters.PSObject.Properties | ForEach-Object { "$($_.Name)=$($_.Value)" }) -join ', '
-            $md.Add("  - Parameters: $paramStr")
-        }
-        if ($s.RunOn) { $md.Add("  - Hybrid Worker Group: $($s.RunOn)") }
+        $out.Add('import {')
+        $out.Add("  to = $tfType.$label")
+        $out.Add("  id = `"$id`"")
+        $out.Add('}')
     }
-    $md.Add("")
+    $out.Add('')
 }
 
-$md -join "`r`n" | Out-File -FilePath $OutputFile -Encoding utf8
-
-Write-Host "Done. Wrote $OutputFile" -ForegroundColor Green
+$out -join "`r`n" | Out-File -FilePath $OutputFile -Encoding utf8
+Write-Host "Wrote $OutputFile" -ForegroundColor Green
+Write-Host ''
+Write-Host 'Next steps:' -ForegroundColor Yellow
+Write-Host '  1. terraform init'
+Write-Host '  2. terraform plan -generate-config-out=generated.tf'
+Write-Host '  3. terraform apply  (this completes the import without changes)'
+Write-Host '  4. Review and clean up generated.tf, then commit.'

@@ -1,6 +1,6 @@
 <#
 .SYNOPSIS
-    Copy all runbooks from one Azure Automation Account to another.
+    Copies all runbooks from one Azure Automation Account to another.
 
 .DESCRIPTION
     Acquires an ARM token via 'az account get-access-token' and uses native PowerShell
@@ -92,9 +92,18 @@ function Invoke-Arm {
         $params.ContentType = $ContentType
     }
     if ($Raw) {
-        # Use Invoke-WebRequest to get raw content
-        $resp = Invoke-WebRequest @params -UseBasicParsing
-        return $resp.Content
+        # Force UTF-8 string from the response body, never byte array
+        $params.UseBasicParsing = $true
+        $resp = Invoke-WebRequest @params
+        # RawContentStream is a MemoryStream of bytes; decode explicitly as UTF-8
+        if ($resp.RawContentStream) {
+            $bytes = $resp.RawContentStream.ToArray()
+            return [System.Text.Encoding]::UTF8.GetString($bytes)
+        }
+        # Fallback: .Content might already be a string on PS7
+        if ($resp.Content -is [string]) { return $resp.Content }
+        if ($resp.Content -is [byte[]]) { return [System.Text.Encoding]::UTF8.GetString($resp.Content) }
+        return [string]$resp.Content
     }
     return Invoke-RestMethod @params
 }
@@ -228,8 +237,9 @@ foreach ($rb in $runbooks) {
         # 4. Upload draft content
         Write-Host '  -> Uploading content...'
         $draftContentUrl = Get-RunbookBaseUrl -AutomationAccount $DestAutomationName -RunbookName $name -SubResource '/draft/content'
-        $rawContent = [System.IO.File]::ReadAllText($contentFile, [System.Text.Encoding]::UTF8)
-        Invoke-Arm -Method PUT -Url $draftContentUrl -Body $rawContent -ContentType $contentType | Out-Null
+        # Send raw bytes as body to avoid PS string-encoding round-trips
+        $rawBytes = [System.IO.File]::ReadAllBytes($contentFile)
+        Invoke-Arm -Method PUT -Url $draftContentUrl -Body $rawBytes -ContentType $contentType | Out-Null
 
         # 5. Publish draft
         Write-Host '  -> Publishing...'

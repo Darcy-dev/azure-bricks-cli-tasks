@@ -27,7 +27,7 @@
 
 [CmdletBinding()]
 param(
-    [string]$AutomationAccountName = 's00175prod-aa',
+    [string]$AutomationAccountName = 's00175prod',
     [string]$ResourceGroupName     = 's00175rg-automation'
 )
 

@@ -1,42 +1,45 @@
 <#
 .SYNOPSIS
-    Copies all runbooks from one Azure Automation Account to another.
+    Extracts all runbooks from an Azure Automation Account along with their linked
+    schedules (job schedules) and outputs the data in multiple formats for feeding
+    to an LLM that will produce Confluence documentation.
 
 .DESCRIPTION
-    Acquires an ARM token via 'az account get-access-token' and uses native PowerShell
-    Invoke-RestMethod to talk to Azure Management API directly. Avoids all the
-    'az rest' / 'az automation' command-name and URL-mangling issues on Windows.
+    Uses az-acquired ARM token + Invoke-RestMethod (no 'az rest' / extension dependency).
+    Produces three artifacts in ./runbook-inventory/:
+      - inventory.json      — full structured data (best for LLM ingestion)
+      - inventory.md        — human-readable Markdown table summary
+      - inventory.csv       — flat CSV (one row per runbook+schedule pair)
+    Also prints a summary table to the console.
 
-.PARAMETER Overwrite
-    If specified, existing runbooks in the destination will be deleted and recreated.
+.PARAMETER AutomationAccountName
+    Override the default Automation Account name.
 
 .EXAMPLE
-    .\Copy-Runbooks-IRM.ps1
-    .\Copy-Runbooks-IRM.ps1 -Overwrite
+    .\Get-RunbookInventory.ps1
+    .\Get-RunbookInventory.ps1 -AutomationAccountName "s00175prod"
 
 .NOTES
-    Requires only:
+    Requires:
       - Azure CLI installed and logged in (az login)
       - Subscription context set (az account set --subscription "<id>")
 #>
 
 [CmdletBinding()]
 param(
-    [switch]$Overwrite
+    [string]$AutomationAccountName = 's00175prod-aa',
+    [string]$ResourceGroupName     = 's00175rg-automation'
 )
 
 # ---- Configuration -----------------------------------------------------------
-$ResourceGroupName    = 's00175rg-automation'
-$SourceAutomationName = 's00175prod-aa'
-$DestAutomationName   = 's00175prod'
-$ApiVersion           = '2022-08-08'
-$ExportPath           = Join-Path $PSScriptRoot 'runbook-export'
+$ApiVersion  = '2022-08-08'
+$OutputDir   = Join-Path $PSScriptRoot 'runbook-inventory'
 # ------------------------------------------------------------------------------
 
 $ErrorActionPreference = 'Stop'
 $env:AZURE_CORE_ONLY_SHOW_ERRORS = 'true'
 
-# ---- Acquire ARM token + subscription via az --------------------------------
+# ---- Acquire token -----------------------------------------------------------
 
 try {
     $tokenJson = & az account get-access-token --resource 'https://management.azure.com/' --output json 2>$null
@@ -52,8 +55,8 @@ try {
     $accountJson    = & az account show --output json 2>$null
     $account        = $accountJson | ConvertFrom-Json
     $subscriptionId = $account.id
-    Write-Host "Logged in as: $($account.user.name)" -ForegroundColor Cyan
     Write-Host "Subscription: $($account.name) ($subscriptionId)" -ForegroundColor Cyan
+    Write-Host "Automation Account: $AutomationAccountName / RG: $ResourceGroupName`n" -ForegroundColor Cyan
 }
 catch {
     Write-Error "Failed to read az account context."
@@ -62,216 +65,253 @@ catch {
 
 $Headers = @{ Authorization = "Bearer $token" }
 $BaseArm = 'https://management.azure.com'
+$AaPath  = "subscriptions/$subscriptionId/resourceGroups/$ResourceGroupName/providers/Microsoft.Automation/automationAccounts/$AutomationAccountName"
 
-# ---- Helpers -----------------------------------------------------------------
-
-function Get-RunbookBaseUrl {
-    param(
-        [string]$AutomationAccount,
-        [string]$RunbookName,
-        [string]$SubResource = ''
-    )
-    return "$BaseArm/subscriptions/$subscriptionId/resourceGroups/$ResourceGroupName/providers/Microsoft.Automation/automationAccounts/$AutomationAccount/runbooks/$RunbookName$SubResource" + "?api-version=$ApiVersion"
-}
+# ---- Helper ------------------------------------------------------------------
 
 function Invoke-Arm {
-    param(
-        [string]$Method,
-        [string]$Url,
-        [object]$Body = $null,
-        [string]$ContentType = 'application/json',
-        [switch]$Raw     # return response body as raw string (for runbook content)
-    )
-    $params = @{
-        Method  = $Method
-        Uri     = $Url
-        Headers = $Headers
-    }
-    if ($Body) {
-        $params.Body        = $Body
-        $params.ContentType = $ContentType
-    }
-    if ($Raw) {
-        # Force UTF-8 string from the response body, never byte array
-        $params.UseBasicParsing = $true
-        $resp = Invoke-WebRequest @params
-        # RawContentStream is a MemoryStream of bytes; decode explicitly as UTF-8
-        if ($resp.RawContentStream) {
-            $bytes = $resp.RawContentStream.ToArray()
-            return [System.Text.Encoding]::UTF8.GetString($bytes)
-        }
-        # Fallback: .Content might already be a string on PS7
-        if ($resp.Content -is [string]) { return $resp.Content }
-        if ($resp.Content -is [byte[]]) { return [System.Text.Encoding]::UTF8.GetString($resp.Content) }
-        return [string]$resp.Content
-    }
-    return Invoke-RestMethod @params
-}
-
-function Get-FileExtensionForRunbook {
-    param([string]$RunbookType)
-    switch ($RunbookType) {
-        'PowerShell'              { 'ps1' }
-        'PowerShell72'            { 'ps1' }
-        'PowerShellWorkflow'      { 'ps1' }
-        'Python2'                 { 'py' }
-        'Python3'                 { 'py' }
-        'GraphPowerShell'         { 'graphrunbook' }
-        'GraphPowerShellWorkflow' { 'graphrunbook' }
-        default                   { 'txt' }
-    }
-}
-
-function Get-ContentTypeForRunbook {
-    param([string]$RunbookType)
-    switch ($RunbookType) {
-        'PowerShell'              { 'text/powershell' }
-        'PowerShell72'            { 'text/powershell' }
-        'PowerShellWorkflow'      { 'text/powershell' }
-        'Python2'                 { 'text/python' }
-        'Python3'                 { 'text/python' }
-        'GraphPowerShell'         { 'application/json' }
-        'GraphPowerShellWorkflow' { 'application/json' }
-        default                   { 'text/plain' }
-    }
-}
-
-# ---- Validate AAs ------------------------------------------------------------
-
-Write-Host "`nValidating Automation Accounts..." -ForegroundColor Cyan
-
-$srcAaUrl  = "$BaseArm/subscriptions/$subscriptionId/resourceGroups/$ResourceGroupName/providers/Microsoft.Automation/automationAccounts/$SourceAutomationName" + "?api-version=$ApiVersion"
-$destAaUrl = "$BaseArm/subscriptions/$subscriptionId/resourceGroups/$ResourceGroupName/providers/Microsoft.Automation/automationAccounts/$DestAutomationName" + "?api-version=$ApiVersion"
-
-try {
-    $srcAA  = Invoke-Arm -Method GET -Url $srcAaUrl
-    $destAA = Invoke-Arm -Method GET -Url $destAaUrl
-    Write-Host "  [OK] Source:      $($srcAA.name) ($($srcAA.location))"
-    Write-Host "  [OK] Destination: $($destAA.name) ($($destAA.location))"
-    $destLocation = $destAA.location
-}
-catch {
-    Write-Error "Failed to access Automation Accounts: $_"
-    exit 1
-}
-
-# ---- Prep export dir ---------------------------------------------------------
-
-if (Test-Path $ExportPath) { Remove-Item $ExportPath -Recurse -Force }
-New-Item -ItemType Directory -Path $ExportPath -Force | Out-Null
-
-# ---- List runbooks -----------------------------------------------------------
-
-Write-Host "`nFetching runbooks from '$SourceAutomationName'..." -ForegroundColor Cyan
-
-$listSrcUrl  = "$BaseArm/subscriptions/$subscriptionId/resourceGroups/$ResourceGroupName/providers/Microsoft.Automation/automationAccounts/$SourceAutomationName/runbooks" + "?api-version=$ApiVersion"
-$listDestUrl = "$BaseArm/subscriptions/$subscriptionId/resourceGroups/$ResourceGroupName/providers/Microsoft.Automation/automationAccounts/$DestAutomationName/runbooks" + "?api-version=$ApiVersion"
-
-$srcList  = Invoke-Arm -Method GET -Url $listSrcUrl
-$destList = Invoke-Arm -Method GET -Url $listDestUrl
-
-$runbooks = $srcList.value
-if (-not $runbooks -or $runbooks.Count -eq 0) {
-    Write-Warning 'No runbooks found in source. Nothing to copy.'
-    exit 0
-}
-Write-Host "Found $($runbooks.Count) runbook(s).`n" -ForegroundColor Cyan
-
-$destNames = @($destList.value | Select-Object -ExpandProperty name)
-
-# ---- Copy loop ---------------------------------------------------------------
-
-$results = [System.Collections.Generic.List[pscustomobject]]::new()
-
-foreach ($rb in $runbooks) {
-    $name        = $rb.name
-    $type        = $rb.properties.runbookType
-    $description = if ($rb.properties.description) { $rb.properties.description } else { '' }
-    $logVerbose  = [bool]$rb.properties.logVerbose
-    $logProgress = [bool]$rb.properties.logProgress
-
-    Write-Host "[$name] type=$type" -ForegroundColor Yellow
-
-    if ($destNames -contains $name -and -not $Overwrite) {
-        Write-Host '  -> SKIP (already exists; use -Overwrite to replace)' -ForegroundColor DarkYellow
-        $results.Add([pscustomobject]@{ Name = $name; Type = $type; Status = 'Skipped' })
-        continue
-    }
-
-    $extension   = Get-FileExtensionForRunbook -RunbookType $type
-    $contentType = Get-ContentTypeForRunbook   -RunbookType $type
-    $contentFile = Join-Path $ExportPath "$name.$extension"
-
+    param([string]$Method, [string]$Url)
     try {
-        # 1. Download published content from source
-        Write-Host '  -> Downloading content from source...'
-        $contentUrl = Get-RunbookBaseUrl -AutomationAccount $SourceAutomationName -RunbookName $name -SubResource '/content'
-        $content = Invoke-Arm -Method GET -Url $contentUrl -Raw
-        if (-not $content) { throw "Empty content returned." }
-        [System.IO.File]::WriteAllText($contentFile, $content, [System.Text.Encoding]::UTF8)
-
-        # 2. Delete existing destination runbook if overwriting
-        if ($destNames -contains $name -and $Overwrite) {
-            Write-Host '  -> Deleting existing destination runbook...'
-            $deleteUrl = Get-RunbookBaseUrl -AutomationAccount $DestAutomationName -RunbookName $name
-            Invoke-Arm -Method DELETE -Url $deleteUrl | Out-Null
-        }
-
-        # 3. Create the runbook resource in destination
-        Write-Host '  -> Creating runbook in destination...'
-        $createUrl = Get-RunbookBaseUrl -AutomationAccount $DestAutomationName -RunbookName $name
-
-        $createBody = @{
-            location   = $destLocation
-            properties = @{
-                runbookType = $type
-                description = $description
-                logVerbose  = $logVerbose
-                logProgress = $logProgress
-                draft       = @{}
-            }
-        } | ConvertTo-Json -Depth 5 -Compress
-
-        Invoke-Arm -Method PUT -Url $createUrl -Body $createBody -ContentType 'application/json' | Out-Null
-
-        # 4. Upload draft content
-        Write-Host '  -> Uploading content...'
-        $draftContentUrl = Get-RunbookBaseUrl -AutomationAccount $DestAutomationName -RunbookName $name -SubResource '/draft/content'
-        # Send raw bytes as body to avoid PS string-encoding round-trips
-        $rawBytes = [System.IO.File]::ReadAllBytes($contentFile)
-        Invoke-Arm -Method PUT -Url $draftContentUrl -Body $rawBytes -ContentType $contentType | Out-Null
-
-        # 5. Publish draft
-        Write-Host '  -> Publishing...'
-        $publishUrl = Get-RunbookBaseUrl -AutomationAccount $DestAutomationName -RunbookName $name -SubResource '/publish'
-        Invoke-Arm -Method POST -Url $publishUrl | Out-Null
-
-        Write-Host '  -> DONE' -ForegroundColor Green
-        $results.Add([pscustomobject]@{ Name = $name; Type = $type; Status = 'Copied' })
+        return Invoke-RestMethod -Method $Method -Uri $Url -Headers $Headers
     }
     catch {
-        $errMsg = $_.Exception.Message
-        # Try to extract Azure error detail
-        if ($_.ErrorDetails -and $_.ErrorDetails.Message) {
-            $errMsg = $_.ErrorDetails.Message
-        }
-        Write-Host "  -> FAILED: $errMsg" -ForegroundColor Red
-        $results.Add([pscustomobject]@{ Name = $name; Type = $type; Status = "Failed: $errMsg" })
+        $msg = $_.Exception.Message
+        if ($_.ErrorDetails -and $_.ErrorDetails.Message) { $msg = $_.ErrorDetails.Message }
+        throw "ARM call failed [$Method $Url]: $msg"
     }
 }
 
-# ---- Summary -----------------------------------------------------------------
+function Format-Schedule {
+    param($Schedule)
+    if (-not $Schedule) { return $null }
+    $p = $Schedule.properties
+    [pscustomobject]@{
+        Name              = $Schedule.name
+        Description       = $p.description
+        Frequency         = $p.frequency
+        Interval          = $p.interval
+        StartTime         = $p.startTime
+        ExpiryTime        = if ($p.expiryTime -and $p.expiryTime -ne '9999-12-31T15:59:00-08:00') { $p.expiryTime } else { $null }
+        TimeZone          = $p.timeZone
+        IsEnabled         = $p.isEnabled
+        NextRun           = $p.nextRun
+        AdvancedSchedule  = $p.advancedSchedule
+    }
+}
 
-Write-Host "`n=== Summary ===" -ForegroundColor Cyan
-$results | Format-Table -AutoSize
+function Get-FrequencyDescription {
+    param($Schedule)
+    if (-not $Schedule) { return '(no schedule)' }
+    $freq = $Schedule.Frequency
+    $intv = $Schedule.Interval
+    $desc = switch ($freq) {
+        'OneTime' { 'Runs once' }
+        'Hour'    { if ($intv -eq 1) { 'Every hour' }   else { "Every $intv hours" } }
+        'Day'     { if ($intv -eq 1) { 'Every day' }    else { "Every $intv days" } }
+        'Week'    { if ($intv -eq 1) { 'Every week' }   else { "Every $intv weeks" } }
+        'Month'   { if ($intv -eq 1) { 'Every month' }  else { "Every $intv months" } }
+        default   { "$freq / interval $intv" }
+    }
+    if (-not $Schedule.IsEnabled) { $desc += ' (DISABLED)' }
+    return $desc
+}
 
-$copied  = ($results | Where-Object Status -eq 'Copied').Count
-$skipped = ($results | Where-Object Status -eq 'Skipped').Count
-$failed  = ($results | Where-Object { $_.Status -like 'Failed*' }).Count
+# ---- Fetch data --------------------------------------------------------------
 
-Write-Host "Copied:  $copied"  -ForegroundColor Green
-Write-Host "Skipped: $skipped" -ForegroundColor DarkYellow
-Write-Host "Failed:  $failed"  -ForegroundColor $(if ($failed) { 'Red' } else { 'Gray' })
-Write-Host "`nExported runbook files preserved in: $ExportPath"
+# Build URLs (api-version embedded; safe in Invoke-RestMethod)
+$qs = "?api-version=$ApiVersion"
 
-if ($failed -gt 0) { exit 1 }
+Write-Host 'Fetching runbooks...' -ForegroundColor Cyan
+$runbooks = (Invoke-Arm -Method GET -Url "$BaseArm/$AaPath/runbooks$qs").value
+Write-Host "  Found $($runbooks.Count) runbook(s)."
+
+Write-Host 'Fetching schedules...' -ForegroundColor Cyan
+$schedules = (Invoke-Arm -Method GET -Url "$BaseArm/$AaPath/schedules$qs").value
+Write-Host "  Found $($schedules.Count) schedule(s)."
+
+Write-Host 'Fetching job schedules (links between runbooks and schedules)...' -ForegroundColor Cyan
+$jobSchedules = (Invoke-Arm -Method GET -Url "$BaseArm/$AaPath/jobSchedules$qs").value
+Write-Host "  Found $($jobSchedules.Count) link(s).`n"
+
+# Index schedules by name
+$scheduleByName = @{}
+foreach ($s in $schedules) { $scheduleByName[$s.name] = (Format-Schedule -Schedule $s) }
+
+# ---- Build inventory ---------------------------------------------------------
+
+$inventory = [System.Collections.Generic.List[pscustomobject]]::new()
+
+foreach ($rb in $runbooks) {
+    # Find all job schedules linked to this runbook
+    $linked = $jobSchedules | Where-Object { $_.properties.runbook.name -eq $rb.name }
+
+    $linkedSchedules = @()
+    $params          = @{}
+
+    foreach ($js in $linked) {
+        $schedName = $js.properties.schedule.name
+        $sched     = $scheduleByName[$schedName]
+        if ($sched) {
+            $linkedSchedules += [pscustomobject]@{
+                ScheduleName     = $sched.Name
+                Description      = $sched.Description
+                Frequency        = $sched.Frequency
+                Interval         = $sched.Interval
+                StartTime        = $sched.StartTime
+                TimeZone         = $sched.TimeZone
+                IsEnabled        = $sched.IsEnabled
+                NextRun          = $sched.NextRun
+                Summary          = (Get-FrequencyDescription -Schedule $sched)
+                AdvancedSchedule = $sched.AdvancedSchedule
+                JobScheduleId    = $js.properties.jobScheduleId
+                Parameters       = $js.properties.parameters
+                RunOn            = $js.properties.runOn
+            }
+        }
+    }
+
+    $entry = [pscustomobject]@{
+        RunbookName   = $rb.name
+        RunbookType   = $rb.properties.runbookType
+        State         = $rb.properties.state
+        Description   = $rb.properties.description
+        LogVerbose    = $rb.properties.logVerbose
+        LogProgress   = $rb.properties.logProgress
+        CreationTime  = $rb.properties.creationTime
+        LastModified  = $rb.properties.lastModifiedTime
+        Tags          = $rb.tags
+        Schedules     = $linkedSchedules
+        ScheduleCount = $linkedSchedules.Count
+    }
+
+    $inventory.Add($entry)
+}
+
+# ---- Output: ensure directory ------------------------------------------------
+
+if (-not (Test-Path $OutputDir)) {
+    New-Item -ItemType Directory -Path $OutputDir -Force | Out-Null
+}
+
+# ---- Output: JSON (best for LLM) ---------------------------------------------
+
+$jsonPath = Join-Path $OutputDir 'inventory.json'
+$inventory | ConvertTo-Json -Depth 10 | Out-File -FilePath $jsonPath -Encoding utf8
+
+# ---- Output: Markdown --------------------------------------------------------
+
+$mdPath = Join-Path $OutputDir 'inventory.md'
+$md     = [System.Collections.Generic.List[string]]::new()
+
+$md.Add("# Automation Account Inventory")
+$md.Add("")
+$md.Add("**Account:** ``$AutomationAccountName``  ")
+$md.Add("**Resource Group:** ``$ResourceGroupName``  ")
+$md.Add("**Subscription:** ``$($account.name)``  ")
+$md.Add("**Generated:** $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss zzz')")
+$md.Add("")
+$md.Add("## Summary")
+$md.Add("")
+$md.Add("- Total runbooks: **$($runbooks.Count)**")
+$md.Add("- Total schedules: **$($schedules.Count)**")
+$md.Add("- Total runbook-schedule links: **$($jobSchedules.Count)**")
+$md.Add("- Runbooks with at least one schedule: **$(($inventory | Where-Object ScheduleCount -gt 0).Count)**")
+$md.Add("- Runbooks with no schedule: **$(($inventory | Where-Object ScheduleCount -eq 0).Count)**")
+$md.Add("")
+$md.Add("## Runbooks")
+$md.Add("")
+$md.Add("| Runbook | Type | State | Schedules | Description |")
+$md.Add("|---------|------|-------|-----------|-------------|")
+
+foreach ($e in ($inventory | Sort-Object RunbookName)) {
+    $schedSummary = if ($e.Schedules.Count -gt 0) {
+        ($e.Schedules | ForEach-Object { "$($_.ScheduleName) ($($_.Summary))" }) -join '; '
+    } else {
+        '_none_'
+    }
+    $desc = if ($e.Description) { ($e.Description -replace '\|','\\|' -replace '\r?\n',' ') } else { '' }
+    $md.Add("| ``$($e.RunbookName)`` | $($e.RunbookType) | $($e.State) | $schedSummary | $desc |")
+}
+
+$md.Add("")
+$md.Add("## Schedules Detail")
+$md.Add("")
+
+foreach ($e in ($inventory | Where-Object ScheduleCount -gt 0 | Sort-Object RunbookName)) {
+    $md.Add("### ``$($e.RunbookName)``")
+    $md.Add("")
+    foreach ($s in $e.Schedules) {
+        $md.Add("- **$($s.ScheduleName)** — $($s.Summary)")
+        if ($s.StartTime) { $md.Add("  - Start: $($s.StartTime) ($($s.TimeZone))") }
+        if ($s.NextRun)   { $md.Add("  - Next run: $($s.NextRun)") }
+        if ($s.Description) { $md.Add("  - Description: $($s.Description)") }
+        if ($s.Parameters -and $s.Parameters.PSObject.Properties.Count -gt 0) {
+            $paramStr = ($s.Parameters.PSObject.Properties | ForEach-Object { "$($_.Name)=$($_.Value)" }) -join ', '
+            $md.Add("  - Parameters: $paramStr")
+        }
+        if ($s.RunOn) { $md.Add("  - Hybrid Worker Group: $($s.RunOn)") }
+    }
+    $md.Add("")
+}
+
+$md -join "`r`n" | Out-File -FilePath $mdPath -Encoding utf8
+
+# ---- Output: CSV (one row per runbook+schedule combo) -----------------------
+
+$csvPath = Join-Path $OutputDir 'inventory.csv'
+$rows    = [System.Collections.Generic.List[pscustomobject]]::new()
+
+foreach ($e in $inventory) {
+    if ($e.Schedules.Count -eq 0) {
+        $rows.Add([pscustomobject]@{
+            RunbookName    = $e.RunbookName
+            RunbookType    = $e.RunbookType
+            RunbookState   = $e.State
+            ScheduleName   = ''
+            ScheduleSummary= ''
+            Frequency      = ''
+            Interval       = ''
+            StartTime      = ''
+            TimeZone       = ''
+            IsEnabled      = ''
+            NextRun        = ''
+            Description    = $e.Description
+        })
+    } else {
+        foreach ($s in $e.Schedules) {
+            $rows.Add([pscustomobject]@{
+                RunbookName    = $e.RunbookName
+                RunbookType    = $e.RunbookType
+                RunbookState   = $e.State
+                ScheduleName   = $s.ScheduleName
+                ScheduleSummary= $s.Summary
+                Frequency      = $s.Frequency
+                Interval       = $s.Interval
+                StartTime      = $s.StartTime
+                TimeZone       = $s.TimeZone
+                IsEnabled      = $s.IsEnabled
+                NextRun        = $s.NextRun
+                Description    = $e.Description
+            })
+        }
+    }
+}
+
+$rows | Export-Csv -Path $csvPath -NoTypeInformation -Encoding utf8
+
+# ---- Console summary ---------------------------------------------------------
+
+Write-Host '=== Summary ===' -ForegroundColor Cyan
+$inventory |
+    Sort-Object RunbookName |
+    Select-Object RunbookName, RunbookType, State, ScheduleCount,
+        @{ N = 'Schedules'; E = { ($_.Schedules.ScheduleName -join ', ') } } |
+    Format-Table -AutoSize
+
+Write-Host ''
+Write-Host 'Output files:' -ForegroundColor Green
+Write-Host "  JSON  (LLM-friendly):  $jsonPath"
+Write-Host "  Markdown (readable):    $mdPath"
+Write-Host "  CSV (spreadsheet):      $csvPath"
+Write-Host ''
+Write-Host 'Tip: paste inventory.json or inventory.md into your LLM prompt and ask it to produce a Confluence page.' -ForegroundColor DarkCyan

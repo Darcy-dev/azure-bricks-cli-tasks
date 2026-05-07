@@ -65,8 +65,9 @@ function Get-RunbookUrl {
         [string]$RunbookName,
         [string]$SubResource = ''   # '', '/draft/content', '/content', '/publish', '/draft'
     )
-    $base = "https://management.azure.com/subscriptions/$SubscriptionId/resourceGroups/$ResourceGroup/providers/Microsoft.Automation/automationAccounts/$AutomationAccount/runbooks/$RunbookName"
-    return "$base$SubResource`?api-version=$ApiVersion"
+    # Returns base URL only; api-version is passed via --uri-parameters to avoid
+    # PowerShell/Windows mangling of '?' in URLs to az rest.
+    return "https://management.azure.com/subscriptions/$SubscriptionId/resourceGroups/$ResourceGroup/providers/Microsoft.Automation/automationAccounts/$AutomationAccount/runbooks/$RunbookName$SubResource"
 }
 
 function Get-ContentTypeForRunbook {
@@ -122,12 +123,12 @@ catch {
 # Validate Automation Accounts exist (via REST so we don't depend on the extension)
 Write-Host "`nValidating Automation Accounts..." -ForegroundColor Cyan
 
-$srcAaUrl  = "https://management.azure.com/subscriptions/$subscriptionId/resourceGroups/$ResourceGroupName/providers/Microsoft.Automation/automationAccounts/$SourceAutomationName?api-version=$ApiVersion"
-$destAaUrl = "https://management.azure.com/subscriptions/$subscriptionId/resourceGroups/$ResourceGroupName/providers/Microsoft.Automation/automationAccounts/$DestAutomationName?api-version=$ApiVersion"
+$srcAaUrl  = "https://management.azure.com/subscriptions/$subscriptionId/resourceGroups/$ResourceGroupName/providers/Microsoft.Automation/automationAccounts/$SourceAutomationName"
+$destAaUrl = "https://management.azure.com/subscriptions/$subscriptionId/resourceGroups/$ResourceGroupName/providers/Microsoft.Automation/automationAccounts/$DestAutomationName"
 
 try {
-    $srcAA  = Invoke-AzJson rest --method get --url $srcAaUrl
-    $destAA = Invoke-AzJson rest --method get --url $destAaUrl
+    $srcAA  = Invoke-AzJson rest --method get --url $srcAaUrl  --uri-parameters "api-version=$ApiVersion"
+    $destAA = Invoke-AzJson rest --method get --url $destAaUrl --uri-parameters "api-version=$ApiVersion"
     Write-Host "  [OK] Source:      $($srcAA.name) ($($srcAA.location))"
     Write-Host "  [OK] Destination: $($destAA.name) ($($destAA.location))"
     $destLocation = $destAA.location
@@ -145,11 +146,11 @@ New-Item -ItemType Directory -Path $ExportPath -Force | Out-Null
 
 Write-Host "`nFetching runbooks from '$SourceAutomationName'..." -ForegroundColor Cyan
 
-$listSrcUrl  = "https://management.azure.com/subscriptions/$subscriptionId/resourceGroups/$ResourceGroupName/providers/Microsoft.Automation/automationAccounts/$SourceAutomationName/runbooks?api-version=$ApiVersion"
-$listDestUrl = "https://management.azure.com/subscriptions/$subscriptionId/resourceGroups/$ResourceGroupName/providers/Microsoft.Automation/automationAccounts/$DestAutomationName/runbooks?api-version=$ApiVersion"
+$listSrcUrl  = "https://management.azure.com/subscriptions/$subscriptionId/resourceGroups/$ResourceGroupName/providers/Microsoft.Automation/automationAccounts/$SourceAutomationName/runbooks"
+$listDestUrl = "https://management.azure.com/subscriptions/$subscriptionId/resourceGroups/$ResourceGroupName/providers/Microsoft.Automation/automationAccounts/$DestAutomationName/runbooks"
 
-$srcList  = Invoke-AzJson rest --method get --url $listSrcUrl
-$destList = Invoke-AzJson rest --method get --url $listDestUrl
+$srcList  = Invoke-AzJson rest --method get --url $listSrcUrl  --uri-parameters "api-version=$ApiVersion"
+$destList = Invoke-AzJson rest --method get --url $listDestUrl --uri-parameters "api-version=$ApiVersion"
 
 $runbooks = $srcList.value
 if (-not $runbooks -or $runbooks.Count -eq 0) {
@@ -191,7 +192,7 @@ foreach ($rb in $runbooks) {
             -RunbookName $name -SubResource '/content'
 
         # az rest writes raw body to stdout for non-JSON responses
-        $content = Invoke-Az rest --method get --url $contentUrl --output tsv
+        $content = Invoke-Az rest --method get --url $contentUrl --uri-parameters "api-version=$ApiVersion" --output tsv
         if (-not $content) { throw "Empty content returned for runbook '$name'." }
         $content | Out-File -FilePath $contentFile -Encoding utf8 -NoNewline
 
@@ -201,7 +202,7 @@ foreach ($rb in $runbooks) {
             $deleteUrl = Get-RunbookUrl -SubscriptionId $subscriptionId `
                 -ResourceGroup $ResourceGroupName -AutomationAccount $DestAutomationName `
                 -RunbookName $name
-            Invoke-Az rest --method delete --url $deleteUrl | Out-Null
+            Invoke-Az rest --method delete --url $deleteUrl --uri-parameters "api-version=$ApiVersion" | Out-Null
         }
 
         # 3. Create the runbook resource in destination (PUT to runbook URL)
@@ -225,7 +226,7 @@ foreach ($rb in $runbooks) {
         $bodyFile = New-TemporaryFile
         $createBody | Out-File -FilePath $bodyFile -Encoding utf8 -NoNewline
         try {
-            Invoke-Az rest --method put --url $createUrl --body "@$bodyFile" `
+            Invoke-Az rest --method put --url $createUrl --uri-parameters "api-version=$ApiVersion" --body "@$bodyFile" `
                 --headers 'Content-Type=application/json' | Out-Null
         }
         finally {
@@ -238,7 +239,7 @@ foreach ($rb in $runbooks) {
             -ResourceGroup $ResourceGroupName -AutomationAccount $DestAutomationName `
             -RunbookName $name -SubResource '/draft/content'
 
-        Invoke-Az rest --method put --url $draftContentUrl `
+        Invoke-Az rest --method put --url $draftContentUrl --uri-parameters "api-version=$ApiVersion" `
             --body "@$contentFile" `
             --headers "Content-Type=$contentType" | Out-Null
 
@@ -248,7 +249,7 @@ foreach ($rb in $runbooks) {
             -ResourceGroup $ResourceGroupName -AutomationAccount $DestAutomationName `
             -RunbookName $name -SubResource '/publish'
 
-        Invoke-Az rest --method post --url $publishUrl | Out-Null
+        Invoke-Az rest --method post --url $publishUrl --uri-parameters "api-version=$ApiVersion" | Out-Null
 
         Write-Host '  -> DONE' -ForegroundColor Green
         $results.Add([pscustomobject]@{ Name = $name; Type = $type; Status = 'Copied' })

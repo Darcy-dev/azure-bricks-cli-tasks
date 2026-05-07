@@ -1,23 +1,11 @@
 <#
 .SYNOPSIS
-    Extracts all runbooks from an Azure Automation Account along with their linked
-    schedules (job schedules) and outputs the data in multiple formats for feeding
-    to an LLM that will produce Confluence documentation.
-
-.DESCRIPTION
-    Uses az-acquired ARM token + Invoke-RestMethod (no 'az rest' / extension dependency).
-    Produces three artifacts in ./runbook-inventory/:
-      - inventory.json      — full structured data (best for LLM ingestion)
-      - inventory.md        — human-readable Markdown table summary
-      - inventory.csv       — flat CSV (one row per runbook+schedule pair)
-    Also prints a summary table to the console.
-
-.PARAMETER AutomationAccountName
-    Override the default Automation Account name.
+    Extracts all runbooks and their linked schedules from an Azure Automation Account
+    and writes a single Markdown file (inventory.md) for feeding to an LLM that will
+    produce Confluence documentation.
 
 .EXAMPLE
     .\Get-RunbookInventory.ps1
-    .\Get-RunbookInventory.ps1 -AutomationAccountName "s00175prod"
 
 .NOTES
     Requires:
@@ -32,8 +20,8 @@ param(
 )
 
 # ---- Configuration -----------------------------------------------------------
-$ApiVersion  = '2022-08-08'
-$OutputDir   = Join-Path $PSScriptRoot 'runbook-inventory'
+$ApiVersion = '2022-08-08'
+$OutputFile = Join-Path $PSScriptRoot 'inventory.md'
 # ------------------------------------------------------------------------------
 
 $ErrorActionPreference = 'Stop'
@@ -67,7 +55,7 @@ $Headers = @{ Authorization = "Bearer $token" }
 $BaseArm = 'https://management.azure.com'
 $AaPath  = "subscriptions/$subscriptionId/resourceGroups/$ResourceGroupName/providers/Microsoft.Automation/automationAccounts/$AutomationAccountName"
 
-# ---- Helper ------------------------------------------------------------------
+# ---- Helpers -----------------------------------------------------------------
 
 function Invoke-Arm {
     param([string]$Method, [string]$Url)
@@ -86,16 +74,15 @@ function Format-Schedule {
     if (-not $Schedule) { return $null }
     $p = $Schedule.properties
     [pscustomobject]@{
-        Name              = $Schedule.name
-        Description       = $p.description
-        Frequency         = $p.frequency
-        Interval          = $p.interval
-        StartTime         = $p.startTime
-        ExpiryTime        = if ($p.expiryTime -and $p.expiryTime -ne '9999-12-31T15:59:00-08:00') { $p.expiryTime } else { $null }
-        TimeZone          = $p.timeZone
-        IsEnabled         = $p.isEnabled
-        NextRun           = $p.nextRun
-        AdvancedSchedule  = $p.advancedSchedule
+        Name             = $Schedule.name
+        Description      = $p.description
+        Frequency        = $p.frequency
+        Interval         = $p.interval
+        StartTime        = $p.startTime
+        TimeZone         = $p.timeZone
+        IsEnabled        = $p.isEnabled
+        NextRun          = $p.nextRun
+        AdvancedSchedule = $p.advancedSchedule
     }
 }
 
@@ -118,7 +105,6 @@ function Get-FrequencyDescription {
 
 # ---- Fetch data --------------------------------------------------------------
 
-# Build URLs (api-version embedded; safe in Invoke-RestMethod)
 $qs = "?api-version=$ApiVersion"
 
 Write-Host 'Fetching runbooks...' -ForegroundColor Cyan
@@ -129,11 +115,10 @@ Write-Host 'Fetching schedules...' -ForegroundColor Cyan
 $schedules = (Invoke-Arm -Method GET -Url "$BaseArm/$AaPath/schedules$qs").value
 Write-Host "  Found $($schedules.Count) schedule(s)."
 
-Write-Host 'Fetching job schedules (links between runbooks and schedules)...' -ForegroundColor Cyan
+Write-Host 'Fetching job schedules...' -ForegroundColor Cyan
 $jobSchedules = (Invoke-Arm -Method GET -Url "$BaseArm/$AaPath/jobSchedules$qs").value
 Write-Host "  Found $($jobSchedules.Count) link(s).`n"
 
-# Index schedules by name
 $scheduleByName = @{}
 foreach ($s in $schedules) { $scheduleByName[$s.name] = (Format-Schedule -Schedule $s) }
 
@@ -142,66 +127,39 @@ foreach ($s in $schedules) { $scheduleByName[$s.name] = (Format-Schedule -Schedu
 $inventory = [System.Collections.Generic.List[pscustomobject]]::new()
 
 foreach ($rb in $runbooks) {
-    # Find all job schedules linked to this runbook
-    $linked = $jobSchedules | Where-Object { $_.properties.runbook.name -eq $rb.name }
-
+    $linked          = $jobSchedules | Where-Object { $_.properties.runbook.name -eq $rb.name }
     $linkedSchedules = @()
-    $params          = @{}
 
     foreach ($js in $linked) {
-        $schedName = $js.properties.schedule.name
-        $sched     = $scheduleByName[$schedName]
+        $sched = $scheduleByName[$js.properties.schedule.name]
         if ($sched) {
             $linkedSchedules += [pscustomobject]@{
-                ScheduleName     = $sched.Name
-                Description      = $sched.Description
-                Frequency        = $sched.Frequency
-                Interval         = $sched.Interval
-                StartTime        = $sched.StartTime
-                TimeZone         = $sched.TimeZone
-                IsEnabled        = $sched.IsEnabled
-                NextRun          = $sched.NextRun
-                Summary          = (Get-FrequencyDescription -Schedule $sched)
-                AdvancedSchedule = $sched.AdvancedSchedule
-                JobScheduleId    = $js.properties.jobScheduleId
-                Parameters       = $js.properties.parameters
-                RunOn            = $js.properties.runOn
+                ScheduleName = $sched.Name
+                Description  = $sched.Description
+                Summary      = (Get-FrequencyDescription -Schedule $sched)
+                StartTime    = $sched.StartTime
+                TimeZone     = $sched.TimeZone
+                IsEnabled    = $sched.IsEnabled
+                NextRun      = $sched.NextRun
+                Parameters   = $js.properties.parameters
+                RunOn        = $js.properties.runOn
             }
         }
     }
 
-    $entry = [pscustomobject]@{
+    $inventory.Add([pscustomobject]@{
         RunbookName   = $rb.name
         RunbookType   = $rb.properties.runbookType
         State         = $rb.properties.state
         Description   = $rb.properties.description
-        LogVerbose    = $rb.properties.logVerbose
-        LogProgress   = $rb.properties.logProgress
-        CreationTime  = $rb.properties.creationTime
-        LastModified  = $rb.properties.lastModifiedTime
-        Tags          = $rb.tags
         Schedules     = $linkedSchedules
         ScheduleCount = $linkedSchedules.Count
-    }
-
-    $inventory.Add($entry)
+    })
 }
 
-# ---- Output: ensure directory ------------------------------------------------
+# ---- Build markdown ----------------------------------------------------------
 
-if (-not (Test-Path $OutputDir)) {
-    New-Item -ItemType Directory -Path $OutputDir -Force | Out-Null
-}
-
-# ---- Output: JSON (best for LLM) ---------------------------------------------
-
-$jsonPath = Join-Path $OutputDir 'inventory.json'
-$inventory | ConvertTo-Json -Depth 10 | Out-File -FilePath $jsonPath -Encoding utf8
-
-# ---- Output: Markdown --------------------------------------------------------
-
-$mdPath = Join-Path $OutputDir 'inventory.md'
-$md     = [System.Collections.Generic.List[string]]::new()
+$md = [System.Collections.Generic.List[string]]::new()
 
 $md.Add("# Automation Account Inventory")
 $md.Add("")
@@ -226,9 +184,7 @@ $md.Add("|---------|------|-------|-----------|-------------|")
 foreach ($e in ($inventory | Sort-Object RunbookName)) {
     $schedSummary = if ($e.Schedules.Count -gt 0) {
         ($e.Schedules | ForEach-Object { "$($_.ScheduleName) ($($_.Summary))" }) -join '; '
-    } else {
-        '_none_'
-    }
+    } else { '_none_' }
     $desc = if ($e.Description) { ($e.Description -replace '\|','\\|' -replace '\r?\n',' ') } else { '' }
     $md.Add("| ``$($e.RunbookName)`` | $($e.RunbookType) | $($e.State) | $schedSummary | $desc |")
 }
@@ -242,8 +198,8 @@ foreach ($e in ($inventory | Where-Object ScheduleCount -gt 0 | Sort-Object Runb
     $md.Add("")
     foreach ($s in $e.Schedules) {
         $md.Add("- **$($s.ScheduleName)** — $($s.Summary)")
-        if ($s.StartTime) { $md.Add("  - Start: $($s.StartTime) ($($s.TimeZone))") }
-        if ($s.NextRun)   { $md.Add("  - Next run: $($s.NextRun)") }
+        if ($s.StartTime)   { $md.Add("  - Start: $($s.StartTime) ($($s.TimeZone))") }
+        if ($s.NextRun)     { $md.Add("  - Next run: $($s.NextRun)") }
         if ($s.Description) { $md.Add("  - Description: $($s.Description)") }
         if ($s.Parameters -and $s.Parameters.PSObject.Properties.Count -gt 0) {
             $paramStr = ($s.Parameters.PSObject.Properties | ForEach-Object { "$($_.Name)=$($_.Value)" }) -join ', '
@@ -254,64 +210,6 @@ foreach ($e in ($inventory | Where-Object ScheduleCount -gt 0 | Sort-Object Runb
     $md.Add("")
 }
 
-$md -join "`r`n" | Out-File -FilePath $mdPath -Encoding utf8
+$md -join "`r`n" | Out-File -FilePath $OutputFile -Encoding utf8
 
-# ---- Output: CSV (one row per runbook+schedule combo) -----------------------
-
-$csvPath = Join-Path $OutputDir 'inventory.csv'
-$rows    = [System.Collections.Generic.List[pscustomobject]]::new()
-
-foreach ($e in $inventory) {
-    if ($e.Schedules.Count -eq 0) {
-        $rows.Add([pscustomobject]@{
-            RunbookName    = $e.RunbookName
-            RunbookType    = $e.RunbookType
-            RunbookState   = $e.State
-            ScheduleName   = ''
-            ScheduleSummary= ''
-            Frequency      = ''
-            Interval       = ''
-            StartTime      = ''
-            TimeZone       = ''
-            IsEnabled      = ''
-            NextRun        = ''
-            Description    = $e.Description
-        })
-    } else {
-        foreach ($s in $e.Schedules) {
-            $rows.Add([pscustomobject]@{
-                RunbookName    = $e.RunbookName
-                RunbookType    = $e.RunbookType
-                RunbookState   = $e.State
-                ScheduleName   = $s.ScheduleName
-                ScheduleSummary= $s.Summary
-                Frequency      = $s.Frequency
-                Interval       = $s.Interval
-                StartTime      = $s.StartTime
-                TimeZone       = $s.TimeZone
-                IsEnabled      = $s.IsEnabled
-                NextRun        = $s.NextRun
-                Description    = $e.Description
-            })
-        }
-    }
-}
-
-$rows | Export-Csv -Path $csvPath -NoTypeInformation -Encoding utf8
-
-# ---- Console summary ---------------------------------------------------------
-
-Write-Host '=== Summary ===' -ForegroundColor Cyan
-$inventory |
-    Sort-Object RunbookName |
-    Select-Object RunbookName, RunbookType, State, ScheduleCount,
-        @{ N = 'Schedules'; E = { ($_.Schedules.ScheduleName -join ', ') } } |
-    Format-Table -AutoSize
-
-Write-Host ''
-Write-Host 'Output files:' -ForegroundColor Green
-Write-Host "  JSON  (LLM-friendly):  $jsonPath"
-Write-Host "  Markdown (readable):    $mdPath"
-Write-Host "  CSV (spreadsheet):      $csvPath"
-Write-Host ''
-Write-Host 'Tip: paste inventory.json or inventory.md into your LLM prompt and ask it to produce a Confluence page.' -ForegroundColor DarkCyan
+Write-Host "Done. Wrote $OutputFile" -ForegroundColor Green

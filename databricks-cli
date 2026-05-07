@@ -197,7 +197,7 @@ foreach ($e in ($inventory | Where-Object ScheduleCount -gt 0 | Sort-Object Runb
     $md.Add("### ``$($e.RunbookName)``")
     $md.Add("")
     foreach ($s in $e.Schedules) {
-        $md.Add("- **$($s.ScheduleName)** — $($s.Summary)")
+        $md.Add("- **$($s.ScheduleName)** - $($s.Summary)")
         if ($s.StartTime)   { $md.Add("  - Start: $($s.StartTime) ($($s.TimeZone))") }
         if ($s.NextRun)     { $md.Add("  - Next run: $($s.NextRun)") }
         if ($s.Description) { $md.Add("  - Description: $($s.Description)") }

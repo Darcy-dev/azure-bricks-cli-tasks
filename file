@@ -1,0 +1,1 @@
+databricks secrets create-scope --json '{"scope":"<scope-name>","initial_manage_principal":"users","scope_backend_type":"AZURE_KEYVAULT","backend_azure_keyvault":{"resource_id":"<resource-id>","dns_name":"<vault-uri>"}}'

@@ -1,10 +1,12 @@
-@json(concat('{',
-  '"dag_run_id":"', guid(), '",',
-  '"data_interval_start":"', utcNow('yyyy-MM-ddTHH:mm:ss.fff'), 'Z",',
-  '"data_interval_end":"', utcNow('yyyy-MM-ddTHH:mm:ss.fff'), 'Z",',
-  '"logical_date":"', utcNow('yyyy-MM-ddTHH:mm:ss.fff'), 'Z",',
-  '"run_after":"', utcNow('yyyy-MM-ddTHH:mm:ss.fff'), 'Z",',
-  '"conf":{},',
-  '"note":"triggered from ADF",',
+@json(concat(
+  '{',
+  '"dag_run_id":"adf__', formatDateTime(utcnow(),'yyyyMMddHHmmssfff'), '",',
+  '"data_interval_start":"', formatDateTime(utcnow(),'yyyy-MM-ddTHH:mm:ss.fffZ'), '",',
+  '"data_interval_end":"', formatDateTime(utcnow(),'yyyy-MM-ddTHH:mm:ss.fffZ'), '",',
+  '"logical_date":"', formatDateTime(utcnow(),'yyyy-MM-ddTHH:mm:ss.fffZ'), '",',
+  '"run_after":"', formatDateTime(utcnow(),'yyyy-MM-ddTHH:mm:ss.fffZ'), '",',
+  '"conf":{"additionalProp1":{}},',
+  '"note":"string",',
   '"partition_key":"string"',
-'}'))
+  '}'
+))

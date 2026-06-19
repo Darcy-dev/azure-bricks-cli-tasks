@@ -1,1 +1,10 @@
-databricks secrets create-scope --json '{"scope":"<scope-name>","initial_manage_principal":"users","scope_backend_type":"AZURE_KEYVAULT","backend_azure_keyvault":{"resource_id":"<resource-id>","dns_name":"<vault-uri>"}}'
+@json(concat('{',
+  '"dag_run_id":"', guid(), '",',
+  '"data_interval_start":"', utcNow('yyyy-MM-ddTHH:mm:ss.fff'), 'Z",',
+  '"data_interval_end":"', utcNow('yyyy-MM-ddTHH:mm:ss.fff'), 'Z",',
+  '"logical_date":"', utcNow('yyyy-MM-ddTHH:mm:ss.fff'), 'Z",',
+  '"run_after":"', utcNow('yyyy-MM-ddTHH:mm:ss.fff'), 'Z",',
+  '"conf":{},',
+  '"note":"triggered from ADF",',
+  '"partition_key":"string"',
+'}'))
